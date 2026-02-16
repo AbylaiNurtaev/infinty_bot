@@ -6,8 +6,8 @@ WORKDIR /app
 # Копируем только файлы зависимостей
 COPY package.json package-lock.json* ./
 
-# Устанавливаем зависимости (без dev)
-RUN npm ci --omit=dev
+# Устанавливаем зависимости (без dev). npm install стабильнее при разных версиях npm на Railway
+RUN npm install --omit=dev
 
 # Копируем исходный код
 COPY src ./src
