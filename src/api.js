@@ -59,18 +59,25 @@ export function createApiClient(token = null) {
       return data;
     },
 
-    /** POST /players/spin — крутить рулетку (нужен token, 20 баллов) */
-    async spinRoulette(clubId) {
-      const { data } = await client.post('/players/spin', { clubId });
+    /** POST /players/spin — крутить рулетку (нужен token, 20 баллов). При геолокации клуба — latitude, longitude. */
+    async spinRoulette(clubId, latitude, longitude) {
+      const body = { clubId };
+      if (latitude != null && longitude != null) {
+        body.latitude = Number(latitude);
+        body.longitude = Number(longitude);
+      }
+      const { data } = await client.post('/players/spin', body);
       return data;
     },
 
-    /** POST /players/spin-by-phone — крутить по телефону без авторизации (гость) */
-    async spinByPhone(clubId, phone) {
-      const { data } = await client.post('/players/spin-by-phone', {
-        clubId: clubId.trim(),
-        phone: phone.trim(),
-      });
+    /** POST /players/spin-by-phone — крутить по телефону. При геолокации клуба — latitude, longitude. */
+    async spinByPhone(clubId, phone, latitude, longitude) {
+      const body = { clubId: clubId.trim(), phone: phone.trim() };
+      if (latitude != null && longitude != null) {
+        body.latitude = Number(latitude);
+        body.longitude = Number(longitude);
+      }
+      const { data } = await client.post('/players/spin-by-phone', body);
       return data;
     },
 

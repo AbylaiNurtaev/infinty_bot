@@ -9,7 +9,7 @@ const STORE_PATH = path.join(__dirname, '..', 'store.json');
 let tokens = {};
 /** chatId -> { step: 'await_code', phone: string } для сценария входа */
 let pendingLogin = {};
-/** chatId -> true когда ждём код клуба для спина */
+/** chatId -> true когда ждём код клуба, или { clubId } когда ждём геолокацию для спина */
 let pendingSpin = {};
 
 function load() {
@@ -62,8 +62,24 @@ export const store = {
     pendingSpin[chatId] = true;
   },
 
+  /** После ввода кода клуба — ждём геолокацию */
+  setPendingSpinLocation(chatId, clubId) {
+    pendingSpin[chatId] = { clubId };
+  },
+
   getPendingSpin(chatId) {
-    return !!pendingSpin[chatId];
+    return pendingSpin[chatId] ?? null;
+  },
+
+  /** true — ждём код, иначе объект { clubId } — ждём геолокацию */
+  isPendingSpinCode(chatId) {
+    const v = pendingSpin[chatId];
+    return v === true;
+  },
+
+  isPendingSpinLocation(chatId) {
+    const v = pendingSpin[chatId];
+    return v && typeof v === 'object' && v.clubId;
   },
 
   clearPendingSpin(chatId) {

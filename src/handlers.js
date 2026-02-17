@@ -69,7 +69,7 @@ async function sendBalance(bot, chatId, userId) {
     const balance = data.balance ?? 0;
     await bot.sendMessage(
       chatId,
-      `💰 Ваш баланс: ${balance} баллов.\n${balance < MIN_BALANCE_FOR_SPIN ? `Для одного спина нужно ${MIN_BALANCE_FOR_SPIN} баллов.` : 'Нажмите «Крутить рулетку» и введите код клуба.'}`,
+      `💰 Ваш баланс: ${balance} баллов.\n${balance < MIN_BALANCE_FOR_SPIN ? `Для одного спина нужно ${MIN_BALANCE_FOR_SPIN} баллов.` : 'Нажмите «Крутить рулетку», введите код клуба и отправьте геолокацию.'}`,
       { reply_markup: mainKeyboard() }
     );
   } catch (err) {
@@ -82,8 +82,8 @@ async function sendBalance(bot, chatId, userId) {
   }
 }
 
-/** Крутить рулетку по коду клуба (общая логика) */
-async function doSpin(bot, chatId, userId, code) {
+/** Крутить рулетку: clubId уже известен, координаты — для проверки нахождения в клубе */
+async function doSpin(bot, chatId, userId, clubId, latitude, longitude) {
   const token = store.getToken(userId);
   if (!token) {
     await bot.sendMessage(chatId, 'Сначала войдите: /login');
@@ -91,19 +91,13 @@ async function doSpin(bot, chatId, userId, code) {
   }
   const api = createApiClient(token);
   try {
-    const club = await api.getClub(code.trim());
-    const clubId = club?._id || club?.id;
-    if (!club || !clubId) {
-      await bot.sendMessage(chatId, '❌ Клуб не найден. Проверьте код.', { reply_markup: mainKeyboard() });
-      return;
-    }
     const balanceRes = await api.getPlayerBalance();
     const balance = balanceRes.balance ?? 0;
     if (balance < MIN_BALANCE_FOR_SPIN) {
       await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, { reply_markup: mainKeyboard() });
       return;
     }
-    const spinData = await api.spinRoulette(clubId);
+    const spinData = await api.spinRoulette(clubId, latitude, longitude);
     const prize = spinData?.spin?.prize || spinData?.prize;
     const newBalance = spinData?.newBalance ?? balance - MIN_BALANCE_FOR_SPIN;
     const prizeName = prize?.name || prize?.prizeId?.name || 'Приз';
@@ -125,6 +119,21 @@ async function doSpin(bot, chatId, userId, code) {
 
 /** Регистрируем все хендлеры на bot */
 export function registerHandlers(bot) {
+  // ——— Получили геолокацию — спин (если ждали локацию после кода клуба) ———
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    if (!msg.location) return;
+
+    const pending = store.getPendingSpin(chatId);
+    if (!pending || !pending.clubId) return;
+
+    const lat = msg.location.latitude;
+    const lon = msg.location.longitude;
+    store.clearPendingSpin(chatId);
+    await doSpin(bot, chatId, userId, pending.clubId, lat, lon);
+  });
+
   // ——— Получили контакт из Telegram — сразу входим по номеру (без кода) ———
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -177,7 +186,7 @@ export function registerHandlers(bot) {
       await sendBalance(bot, chatId, userId);
       return;
     }
-    // Кнопка «Крутить рулетку» — ждём код
+    // Кнопка «Крутить рулетку» — сначала код клуба, потом геолокация
     if (text === '🎰 Крутить рулетку') {
       const token = store.getToken(userId);
       if (!token) {
@@ -188,10 +197,35 @@ export function registerHandlers(bot) {
       await bot.sendMessage(chatId, 'Введите код клуба (например 123456):');
       return;
     }
-    // Ждём код клуба после /spin или кнопки «Крутить рулетку»
-    if (store.getPendingSpin(chatId) && text && !/^\/\w+/.test(text)) {
-      store.clearPendingSpin(chatId);
-      await doSpin(bot, chatId, userId, text);
+    // Ждём код клуба — проверяем клуб, затем просим геолокацию
+    if (store.isPendingSpinCode(chatId) && text && !/^\/\w+/.test(text)) {
+      const token = store.getToken(userId);
+      if (!token) {
+        store.clearPendingSpin(chatId);
+        await bot.sendMessage(chatId, 'Сначала войдите: /login');
+        return;
+      }
+      const api = createApiClient(token);
+      try {
+        const club = await api.getClub(text.trim());
+        const clubId = club?._id || club?.id;
+        if (!club || !clubId) {
+          await bot.sendMessage(chatId, '❌ Клуб не найден. Проверьте код.', { reply_markup: mainKeyboard() });
+          return;
+        }
+        store.setPendingSpinLocation(chatId, String(clubId));
+        await bot.sendMessage(chatId, 'Отправьте вашу геолокацию, чтобы подтвердить нахождение в клубе:', {
+          reply_markup: {
+            keyboard: [[{ text: '📍 Отправить геолокацию', request_location: true }]],
+            one_time_keyboard: true,
+            resize_keyboard: true,
+          },
+        });
+      } catch (err) {
+        store.clearPendingSpin(chatId);
+        const message = err.response?.data?.message || err.message || 'Ошибка';
+        await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard() });
+      }
       return;
     }
   });
@@ -211,7 +245,7 @@ export function registerHandlers(bot) {
       '',
       '📱 /login — войти',
       '💰 /balance — баланс',
-      '🎰 /spin — крутить рулетку (потом введите код клуба)',
+      '🎰 /spin — крутить рулетку (код клуба + геолокация)',
       '🎁 /prizes — мои призы',
       '📜 /history — история',
       '🏆 /recent — последние выигрыши',
@@ -240,7 +274,7 @@ export function registerHandlers(bot) {
     await sendBalance(bot, msg.chat.id, msg.from?.id);
   });
 
-  // ——— /spin — запускает ожидание кода (код пользователь вводит следующим сообщением)
+  // ——— /spin — запускает ожидание кода, затем геолокации
   bot.onText(/\/spin$/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
@@ -250,7 +284,7 @@ export function registerHandlers(bot) {
       return;
     }
     store.setPendingSpin(chatId);
-    await bot.sendMessage(chatId, 'Введите код клуба (например 123456):', { reply_markup: mainKeyboard() });
+    await bot.sendMessage(chatId, 'Введите код клуба (например 123456). Затем отправьте геолокацию.', { reply_markup: mainKeyboard() });
   });
 
   // ——— /prizes ———
