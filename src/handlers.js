@@ -393,7 +393,7 @@ export function registerHandlers(bot) {
   bot.onText(/\/login/, async (msg) => {
     const chatId = msg.chat.id;
     store.setPendingLogin(chatId, null);
-    await bot.sendMessage(chatId, 'Нажмите кнопку ниже, чтобы отправить номер телефона из Telegram. После этого введите код из СМС.', {
+    await bot.sendMessage(chatId, 'Нажмите кнопку ниже, чтобы отправить номер телефона из Telegram.', {
       reply_markup: {
         keyboard: [[{ text: '📱 Отправить мой номер', request_contact: true }]],
         one_time_keyboard: true,

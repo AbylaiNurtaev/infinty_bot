@@ -39,9 +39,9 @@ export function createApiClient(token = null) {
       return data;
     },
 
-    /** PATCH /players/me — обновить профиль (имя и т.д.) */
-    async updatePlayerMe(payload) {
-      const { data } = await client.patch('/players/me', payload);
+    /** PATCH /players/me — обновить имя. Тело: { "name": "Новое имя" }, заголовок Authorization: Bearer <token> */
+    async updatePlayerMe({ name }) {
+      const { data } = await client.patch('/players/me', { name: (name || '').trim() });
       return data;
     },
 
