@@ -154,7 +154,7 @@ async function doSpin(bot, chatId, userId, latitude, longitude) {
     const resultText = `🎰 Рулетка прокручена!\n\n🎁 Вы выиграли: ${prizeName}\n💰 Новый баланс: ${newBalance} баллов.`;
     setTimeout(() => {
       bot.sendMessage(chatId, resultText, { reply_markup: mainKeyboard() }).catch(() => {});
-    }, 7000);
+    }, 15000);
   } catch (err) {
     if (err.response?.status === 401) {
       store.removeToken(userId);
