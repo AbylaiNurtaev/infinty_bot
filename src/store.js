@@ -7,10 +7,12 @@ const STORE_PATH = path.join(__dirname, '..', 'store.json');
 
 /** telegramUserId -> { token, phone? } */
 let tokens = {};
-/** chatId -> { step: 'await_code', phone: string } для сценария входа */
+/** chatId -> { step: 'await_code'|'await_name', phone?: string } для сценария входа/регистрации */
 let pendingLogin = {};
-/** chatId -> true когда ждём код клуба, или { clubId } когда ждём геолокацию для спина */
+/** chatId -> true когда ждём геолокацию для спина */
 let pendingSpin = {};
+/** chatId -> true когда ждём новое имя в профиле */
+let pendingChangeName = {};
 
 function load() {
   try {
@@ -47,7 +49,12 @@ export const store = {
   },
 
   setPendingLogin(chatId, phone) {
-    pendingLogin[chatId] = { step: 'await_code', phone };
+    pendingLogin[chatId] = { step: 'await_code', phone: phone ?? null };
+  },
+
+  /** После контакта: ждём имя для регистрации */
+  setPendingLoginAwaitName(chatId, phone) {
+    pendingLogin[chatId] = { step: 'await_name', phone };
   },
 
   getPendingLogin(chatId) {
@@ -62,27 +69,23 @@ export const store = {
     pendingSpin[chatId] = true;
   },
 
-  /** После ввода кода клуба — ждём геолокацию */
-  setPendingSpinLocation(chatId, clubId) {
-    pendingSpin[chatId] = { clubId };
-  },
-
   getPendingSpin(chatId) {
-    return pendingSpin[chatId] ?? null;
-  },
-
-  /** true — ждём код, иначе объект { clubId } — ждём геолокацию */
-  isPendingSpinCode(chatId) {
-    const v = pendingSpin[chatId];
-    return v === true;
-  },
-
-  isPendingSpinLocation(chatId) {
-    const v = pendingSpin[chatId];
-    return v && typeof v === 'object' && v.clubId;
+    return !!pendingSpin[chatId];
   },
 
   clearPendingSpin(chatId) {
     delete pendingSpin[chatId];
+  },
+
+  setPendingChangeName(chatId) {
+    pendingChangeName[chatId] = true;
+  },
+
+  getPendingChangeName(chatId) {
+    return !!pendingChangeName[chatId];
+  },
+
+  clearPendingChangeName(chatId) {
+    delete pendingChangeName[chatId];
   },
 };

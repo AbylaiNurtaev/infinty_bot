@@ -48,11 +48,25 @@ function normalizePhone(phoneNumber) {
   return digits.startsWith('7') || digits.startsWith('8') ? '7' + digits.slice(-10) : '7' + digits;
 }
 
-/** Клавиатура после входа: 2 кнопки */
+/** Клавиатура после входа: 3 кнопки */
 function mainKeyboard() {
   return {
-    keyboard: [[{ text: '💰 Мой баланс' }, { text: '🎰 Крутить рулетку' }]],
+    keyboard: [
+      [{ text: '💰 Мой баланс' }, { text: '🎰 Крутить рулетку' }],
+      [{ text: '👤 Мой профиль' }],
+    ],
     resize_keyboard: true,
+  };
+}
+
+/** Клавиатура в профиле (история, призы, изменить имя) */
+function profileInlineKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '📜 История рулеток', callback_data: 'profile_history' }],
+      [{ text: '🎁 Мои призы', callback_data: 'profile_prizes' }],
+      [{ text: '✏️ Изменить имя', callback_data: 'profile_change_name' }],
+    ],
   };
 }
 
@@ -69,7 +83,7 @@ async function sendBalance(bot, chatId, userId) {
     const balance = data.balance ?? 0;
     await bot.sendMessage(
       chatId,
-      `💰 Ваш баланс: ${balance} баллов.\n${balance < MIN_BALANCE_FOR_SPIN ? `Для одного спина нужно ${MIN_BALANCE_FOR_SPIN} баллов.` : 'Нажмите «Крутить рулетку», введите код клуба и отправьте геолокацию.'}`,
+      `💰 Ваш баланс: ${balance} баллов.\n${balance < MIN_BALANCE_FOR_SPIN ? `Для одного спина нужно ${MIN_BALANCE_FOR_SPIN} баллов.` : 'Нажмите «Крутить рулетку» и отправьте геолокацию.'}`,
       { reply_markup: mainKeyboard() }
     );
   } catch (err) {
@@ -82,8 +96,43 @@ async function sendBalance(bot, chatId, userId) {
   }
 }
 
-/** Крутить рулетку: clubId уже известен, координаты — для проверки нахождения в клубе */
-async function doSpin(bot, chatId, userId, clubId, latitude, longitude) {
+/** Показать экран профиля: данные игрока + кнопки (история, призы, изменить имя) */
+async function sendProfile(bot, chatId, userId) {
+  const token = store.getToken(userId);
+  if (!token) {
+    await bot.sendMessage(chatId, 'Сначала войдите: /login');
+    return;
+  }
+  const api = createApiClient(token);
+  try {
+    const [me, balanceRes] = await Promise.all([api.getPlayerMe(), api.getPlayerBalance()]);
+    const name = me?.name || '—';
+    const phone = me?.phone || '—';
+    const balance = balanceRes?.balance ?? 0;
+    const lines = [
+      '👤 Мой профиль',
+      '',
+      `Имя: ${name}`,
+      `Телефон: ${phone}`,
+      `Баланс: ${balance} баллов`,
+      '',
+      'Выберите действие:',
+    ];
+    await bot.sendMessage(chatId, lines.join('\n'), {
+      reply_markup: { ...profileInlineKeyboard() },
+    });
+  } catch (err) {
+    if (err.response?.status === 401) {
+      store.removeToken(userId);
+      await bot.sendMessage(chatId, 'Сессия истекла. Войдите снова: /login');
+    } else {
+      await bot.sendMessage(chatId, '❌ ' + (err.response?.data?.message || err.message));
+    }
+  }
+}
+
+/** Крутить рулетку по геолокации (проверка «в клубе» на бэкенде) */
+async function doSpin(bot, chatId, userId, latitude, longitude) {
   const token = store.getToken(userId);
   if (!token) {
     await bot.sendMessage(chatId, 'Сначала войдите: /login');
@@ -97,7 +146,7 @@ async function doSpin(bot, chatId, userId, clubId, latitude, longitude) {
       await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, { reply_markup: mainKeyboard() });
       return;
     }
-    const spinData = await api.spinRoulette(clubId, latitude, longitude);
+    const spinData = await api.spinRoulette(latitude, longitude);
     const prize = spinData?.spin?.prize || spinData?.prize;
     const newBalance = spinData?.newBalance ?? balance - MIN_BALANCE_FOR_SPIN;
     const prizeName = prize?.name || prize?.prizeId?.name || 'Приз';
@@ -119,22 +168,21 @@ async function doSpin(bot, chatId, userId, clubId, latitude, longitude) {
 
 /** Регистрируем все хендлеры на bot */
 export function registerHandlers(bot) {
-  // ——— Получили геолокацию — спин (если ждали локацию после кода клуба) ———
+  // ——— Получили геолокацию — спин (если ждали локацию) ———
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!msg.location) return;
 
-    const pending = store.getPendingSpin(chatId);
-    if (!pending || !pending.clubId) return;
+    if (!store.getPendingSpin(chatId)) return;
 
     const lat = msg.location.latitude;
     const lon = msg.location.longitude;
     store.clearPendingSpin(chatId);
-    await doSpin(bot, chatId, userId, pending.clubId, lat, lon);
+    await doSpin(bot, chatId, userId, lat, lon);
   });
 
-  // ——— Получили контакт из Telegram — сразу входим по номеру (без кода) ———
+  // ——— Получили контакт из Telegram — пробуем вход, при необходимости просим имя для регистрации ———
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
@@ -152,27 +200,131 @@ export function registerHandlers(bot) {
     await bot.sendMessage(chatId, 'Входим…', { reply_markup: { remove_keyboard: true } });
 
     const api = createApiClient();
-    const code = '0000'; // отправляем под капотом, в ТГ не запрашиваем
+    const code = '0000';
     try {
       let data = await api.login(phone, code);
-      if (!data || !data.token) {
-        data = await api.register(phone, code);
-      }
       if (data && data.token) {
         store.setToken(userId, data.token, phone);
         await bot.sendMessage(chatId, `✅ Вы вошли!\nТелефон: ${phone}`, {
           reply_markup: mainKeyboard(),
         });
-      } else {
-        await bot.sendMessage(chatId, '❌ Не удалось войти. Попробуйте /login снова.');
+        return;
       }
-    } catch (err) {
-      const message = err.response?.data?.message || err.message || 'Ошибка входа';
-      await bot.sendMessage(chatId, `❌ ${message}\nПопробуйте /login снова.`);
+    } catch (_) {
+      // Вход не удался — возможно, пользователь не зарегистрирован
+    }
+    // Требуется регистрация: запрашиваем имя
+    store.setPendingLoginAwaitName(chatId, phone);
+    await bot.sendMessage(chatId, 'Введите ваше имя для регистрации:');
+  });
+
+  // ——— Inline-кнопки в профиле (история, призы, изменить имя) ———
+  bot.on('callback_query', async (query) => {
+    const chatId = query.message?.chat?.id;
+    const userId = query.from?.id;
+    const data = query.data;
+    if (!chatId || !data?.startsWith('profile_')) return;
+
+    await bot.answerCallbackQuery(query.id);
+
+    if (data === 'profile_history') {
+      const token = store.getToken(userId);
+      if (!token) {
+        await bot.sendMessage(chatId, 'Сначала войдите: /login');
+        return;
+      }
+      const api = createApiClient(token);
+      try {
+        const list = await api.getPlayerTransactions();
+        const transactions = Array.isArray(list) ? list : [];
+        if (transactions.length === 0) {
+          await bot.sendMessage(chatId, '📜 История транзакций пуста.');
+        } else {
+          const lines = transactions.slice(0, 25).map(formatTransaction);
+          const text = '📜 История транзакций:\n\n' + lines.join('\n');
+          await bot.sendMessage(chatId, text.length > 4000 ? text.slice(0, 4000) + '\n…' : text);
+        }
+      } catch (err) {
+        await bot.sendMessage(chatId, '❌ ' + (err.response?.data?.message || err.message));
+      }
+      return;
+    }
+    if (data === 'profile_prizes') {
+      const token = store.getToken(userId);
+      if (!token) {
+        await bot.sendMessage(chatId, 'Сначала войдите: /login');
+        return;
+      }
+      const api = createApiClient(token);
+      try {
+        const list = await api.getPlayerPrizes();
+        const prizes = Array.isArray(list) ? list : [];
+        if (prizes.length === 0) {
+          await bot.sendMessage(chatId, '🎁 У вас пока нет призов.');
+        } else {
+          const text = '🎁 Мои призы:\n\n' + prizes.slice(0, 20).map(formatPrize).join('\n\n');
+          await bot.sendMessage(chatId, text.length > 4000 ? text.slice(0, 4000) + '\n…' : text);
+        }
+      } catch (err) {
+        await bot.sendMessage(chatId, '❌ ' + (err.response?.data?.message || err.message));
+      }
+      return;
+    }
+    if (data === 'profile_change_name') {
+      store.setPendingChangeName(chatId);
+      await bot.sendMessage(chatId, 'Введите новое имя:', { reply_markup: mainKeyboard() });
     }
   });
 
-  // ——— Кнопки и ввод кода для спина ———
+  // ——— Ожидание нового имени (из профиля) ———
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const text = (msg.text || '').trim();
+    if (!store.getPendingChangeName(chatId) || !text || /^\/\w+/.test(text)) return;
+    if (msg.contact || msg.location) return;
+
+    store.clearPendingChangeName(chatId);
+    const api = createApiClient(store.getToken(userId));
+    try {
+      await api.updatePlayerMe({ name: text });
+      await bot.sendMessage(chatId, `✅ Имя изменено на «${text}»`, { reply_markup: mainKeyboard() });
+    } catch (err) {
+      const message = err.response?.data?.message || err.message || 'Не удалось изменить имя';
+      await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard() });
+    }
+  });
+
+  // ——— Ожидание имени при регистрации ———
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const text = (msg.text || '').trim();
+    const pendingLogin = store.getPendingLogin(chatId);
+    if (pendingLogin?.step === 'await_name' && pendingLogin.phone && text && !/^\/\w+/.test(text)) {
+      const api = createApiClient();
+      const code = '0000';
+      try {
+        const data = await api.register(pendingLogin.phone, code, text);
+        store.clearPendingLogin(chatId);
+        if (data && data.token) {
+          store.setToken(userId, data.token, pendingLogin.phone);
+          await bot.sendMessage(chatId, `✅ Вы зарегистрированы!\nТелефон: ${pendingLogin.phone}`, {
+            reply_markup: mainKeyboard(),
+          });
+        } else {
+          await bot.sendMessage(chatId, '❌ Не удалось зарегистрироваться. Попробуйте /login снова.');
+        }
+      } catch (err) {
+        const message = err.response?.data?.message || err.message || 'Ошибка регистрации';
+        await bot.sendMessage(chatId, `❌ ${message}\nПопробуйте /login снова.`);
+      }
+      return;
+    }
+    if (pendingLogin) return; // в процессе входа (ждём контакт)
+  });
+
+  // ——— Кнопки и спин ———
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
@@ -186,7 +338,7 @@ export function registerHandlers(bot) {
       await sendBalance(bot, chatId, userId);
       return;
     }
-    // Кнопка «Крутить рулетку» — сначала код клуба, потом геолокация
+    // Кнопка «Крутить рулетку» — запрашиваем только геолокацию
     if (text === '🎰 Крутить рулетку') {
       const token = store.getToken(userId);
       if (!token) {
@@ -194,38 +346,18 @@ export function registerHandlers(bot) {
         return;
       }
       store.setPendingSpin(chatId);
-      await bot.sendMessage(chatId, 'Введите код клуба (например 123456):');
+      await bot.sendMessage(chatId, 'Отправьте геолокацию, чтобы подтвердить нахождение в клубе:', {
+        reply_markup: {
+          keyboard: [[{ text: '📍 Отправить геолокацию', request_location: true }]],
+          one_time_keyboard: true,
+          resize_keyboard: true,
+        },
+      });
       return;
     }
-    // Ждём код клуба — проверяем клуб, затем просим геолокацию
-    if (store.isPendingSpinCode(chatId) && text && !/^\/\w+/.test(text)) {
-      const token = store.getToken(userId);
-      if (!token) {
-        store.clearPendingSpin(chatId);
-        await bot.sendMessage(chatId, 'Сначала войдите: /login');
-        return;
-      }
-      const api = createApiClient(token);
-      try {
-        const club = await api.getClub(text.trim());
-        const clubId = club?._id || club?.id;
-        if (!club || !clubId) {
-          await bot.sendMessage(chatId, '❌ Клуб не найден. Проверьте код.', { reply_markup: mainKeyboard() });
-          return;
-        }
-        store.setPendingSpinLocation(chatId, String(clubId));
-        await bot.sendMessage(chatId, 'Отправьте вашу геолокацию, чтобы подтвердить нахождение в клубе:', {
-          reply_markup: {
-            keyboard: [[{ text: '📍 Отправить геолокацию', request_location: true }]],
-            one_time_keyboard: true,
-            resize_keyboard: true,
-          },
-        });
-      } catch (err) {
-        store.clearPendingSpin(chatId);
-        const message = err.response?.data?.message || err.message || 'Ошибка';
-        await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard() });
-      }
+    // Кнопка «Мой профиль»
+    if (text === '👤 Мой профиль') {
+      await sendProfile(bot, chatId, userId);
       return;
     }
   });
@@ -245,7 +377,8 @@ export function registerHandlers(bot) {
       '',
       '📱 /login — войти',
       '💰 /balance — баланс',
-      '🎰 /spin — крутить рулетку (код клуба + геолокация)',
+      '🎰 /spin — крутить рулетку (отправьте геолокацию)',
+      '👤 /profile — мой профиль',
       '🎁 /prizes — мои призы',
       '📜 /history — история',
       '🏆 /recent — последние выигрыши',
@@ -274,7 +407,12 @@ export function registerHandlers(bot) {
     await sendBalance(bot, msg.chat.id, msg.from?.id);
   });
 
-  // ——— /spin — запускает ожидание кода, затем геолокации
+  // ——— /profile ———
+  bot.onText(/\/(profile|профиль)/i, async (msg) => {
+    await sendProfile(bot, msg.chat.id, msg.from?.id);
+  });
+
+  // ——— /spin — запрашиваем только геолокацию
   bot.onText(/\/spin$/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
@@ -284,7 +422,13 @@ export function registerHandlers(bot) {
       return;
     }
     store.setPendingSpin(chatId);
-    await bot.sendMessage(chatId, 'Введите код клуба (например 123456). Затем отправьте геолокацию.', { reply_markup: mainKeyboard() });
+    await bot.sendMessage(chatId, 'Отправьте геолокацию, чтобы подтвердить нахождение в клубе:', {
+      reply_markup: {
+        keyboard: [[{ text: '📍 Отправить геолокацию', request_location: true }]],
+        one_time_keyboard: true,
+        resize_keyboard: true,
+      },
+    });
   });
 
   // ——— /prizes ———

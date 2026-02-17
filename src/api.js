@@ -23,15 +23,25 @@ export function createApiClient(token = null) {
       return data;
     },
 
-    /** POST /players/register — регистрация игрока */
-    async register(phone, code) {
-      const { data } = await client.post('/players/register', { phone: phone.trim(), code: code.trim() });
+    /** POST /players/register — регистрация игрока (обязательно name) */
+    async register(phone, code, name) {
+      const { data } = await client.post('/players/register', {
+        phone: phone.trim(),
+        code: code.trim(),
+        name: (name || '').trim(),
+      });
       return data;
     },
 
     /** GET /players/me — текущий игрок (нужен token) */
     async getPlayerMe() {
       const { data } = await client.get('/players/me');
+      return data;
+    },
+
+    /** PATCH /players/me — обновить профиль (имя и т.д.) */
+    async updatePlayerMe(payload) {
+      const { data } = await client.patch('/players/me', payload);
       return data;
     },
 
@@ -59,13 +69,14 @@ export function createApiClient(token = null) {
       return data;
     },
 
-    /** POST /players/spin — крутить рулетку (нужен token, 20 баллов). При геолокации клуба — latitude, longitude. */
-    async spinRoulette(clubId, latitude, longitude) {
-      const body = { clubId };
-      if (latitude != null && longitude != null) {
-        body.latitude = Number(latitude);
-        body.longitude = Number(longitude);
-      }
+    /** POST /players/spin — крутить рулетку (token, latitude, longitude). clubId из env CLUB_ID если задан. */
+    async spinRoulette(latitude, longitude) {
+      const body = {
+        latitude: Number(latitude),
+        longitude: Number(longitude),
+      };
+      const clubId = process.env.CLUB_ID?.trim();
+      if (clubId) body.clubId = clubId;
       const { data } = await client.post('/players/spin', body);
       return data;
     },
