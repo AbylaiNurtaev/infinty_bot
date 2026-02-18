@@ -17,19 +17,23 @@ export function createApiClient(token = null) {
   }
 
   return {
-    /** POST /auth/login — единый вход (игрок/клуб/админ), возвращает token + role */
-    async login(phone, code) {
-      const { data } = await client.post('/auth/login', { phone: phone.trim(), code: code.trim() });
+    /** POST /auth/login — единый вход (игрок/клуб/админ), возвращает token + role. ref — реферальный код пригласившего (ref_<userId>). */
+    async login(phone, code, ref = null) {
+      const body = { phone: phone.trim(), code: code.trim() };
+      if (ref && String(ref).trim()) body.ref = String(ref).trim();
+      const { data } = await client.post('/auth/login', body);
       return data;
     },
 
-    /** POST /players/register — регистрация игрока (обязательно name) */
-    async register(phone, code, name) {
-      const { data } = await client.post('/players/register', {
+    /** POST /auth/register — регистрация игрока (обязательно name). ref — реферальный код из start (ref_...). */
+    async register(phone, code, name, ref = null) {
+      const body = {
         phone: phone.trim(),
         code: code.trim(),
         name: (name || '').trim(),
-      });
+      };
+      if (ref && String(ref).trim()) body.ref = String(ref).trim();
+      const { data } = await client.post('/auth/register', body);
       return data;
     },
 

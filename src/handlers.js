@@ -2,6 +2,9 @@ import { createApiClient } from './api.js';
 import { store } from './store.js';
 
 const MIN_BALANCE_FOR_SPIN = 20;
+const GEO_SESSION_MS = 60 * 60 * 1000; // 60 минут
+const SPIN_LIMIT = 5;
+const SPIN_WINDOW_MS = 10 * 60 * 1000; // 10 минут
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -17,7 +20,7 @@ function formatDate(iso) {
 
 function formatTransaction(t) {
   const typeLabel =
-    t.type === 'earned' || t.type === 'registration_bonus' || t.type === 'prize_points'
+    t.type === 'earned' || t.type === 'registration_bonus' || t.type === 'prize_points' || t.type === 'referral_bonus'
       ? '➕ Начислено'
       : t.type === 'spent' || t.type === 'spin_cost'
         ? '➖ Списано'
@@ -48,12 +51,39 @@ function normalizePhone(phoneNumber) {
   return digits.startsWith('7') || digits.startsWith('8') ? '7' + digits.slice(-10) : '7' + digits;
 }
 
-/** Клавиатура после входа: 3 кнопки */
-function mainKeyboard() {
+/** Текст статуса гео-сессии: "Сессия активна до 18:40 (ещё 57 минут)" или null */
+function getSessionStatusText(userId) {
+  const session = store.getGeoSession(userId);
+  if (!session) return null;
+  const end = new Date(session.expiresAt);
+  const minsLeft = Math.max(0, Math.floor((session.expiresAt - Date.now()) / 60000));
+  const timeStr = end.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return `Сессия активна до ${timeStr} (ещё ${minsLeft} мин.)`;
+}
+
+/** Клавиатура по состоянию: Войти / Подтвердить клуб / Крутить рулетку + баланс и профиль */
+function mainKeyboard(userId) {
+  const token = store.getToken(userId);
+  if (!token) {
+    return {
+      keyboard: [[{ text: '📱 Войти', request_contact: true }]],
+      resize_keyboard: true,
+    };
+  }
+  const geo = store.getGeoSession(userId);
+  if (!geo) {
+    return {
+      keyboard: [
+        [{ text: '💰 Мой баланс' }, { text: '📍 Подтвердить клуб', request_location: true }],
+        [{ text: '👤 Мой профиль' }, { text: '👥 Пригласить друга' }],
+      ],
+      resize_keyboard: true,
+    };
+  }
   return {
     keyboard: [
       [{ text: '💰 Мой баланс' }, { text: '🎰 Крутить рулетку' }],
-      [{ text: '👤 Мой профиль' }],
+      [{ text: '👤 Мой профиль' }, { text: '👥 Пригласить друга' }],
     ],
     resize_keyboard: true,
   };
@@ -74,17 +104,24 @@ function profileInlineKeyboard() {
 async function sendBalance(bot, chatId, userId) {
   const token = store.getToken(userId);
   if (!token) {
-    await bot.sendMessage(chatId, 'Сначала войдите: /login');
+    await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
     return;
   }
   const api = createApiClient(token);
   try {
     const data = await api.getPlayerBalance();
     const balance = data.balance ?? 0;
+    const geo = store.getGeoSession(userId);
+    const hint = balance < MIN_BALANCE_FOR_SPIN
+      ? `Для одного спина нужно ${MIN_BALANCE_FOR_SPIN} баллов.`
+      : geo
+        ? 'Нажмите «Крутить рулетку».'
+        : 'Подтвердите клуб (отправьте геолокацию).';
+    const sessionLine = getSessionStatusText(userId) ? '\n' + getSessionStatusText(userId) : '';
     await bot.sendMessage(
       chatId,
-      `💰 Ваш баланс: ${balance} баллов.\n${balance < MIN_BALANCE_FOR_SPIN ? `Для одного спина нужно ${MIN_BALANCE_FOR_SPIN} баллов.` : 'Нажмите «Крутить рулетку» и отправьте геолокацию.'}`,
-      { reply_markup: mainKeyboard() }
+      `💰 Ваш баланс: ${balance} баллов.\n${hint}${sessionLine}`,
+      { reply_markup: mainKeyboard(userId) }
     );
   } catch (err) {
     if (err.response?.status === 401) {
@@ -143,17 +180,17 @@ async function doSpin(bot, chatId, userId, latitude, longitude) {
     const balanceRes = await api.getPlayerBalance();
     const balance = balanceRes.balance ?? 0;
     if (balance < MIN_BALANCE_FOR_SPIN) {
-      await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, { reply_markup: mainKeyboard() });
+      await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, { reply_markup: mainKeyboard(userId) });
       return;
     }
     const spinData = await api.spinRoulette(latitude, longitude);
     const prize = spinData?.spin?.prize || spinData?.prize;
     const newBalance = spinData?.newBalance ?? balance - MIN_BALANCE_FOR_SPIN;
     const prizeName = prize?.name || prize?.prizeId?.name || 'Приз';
-    await bot.sendMessage(chatId, '🎰 Крутим рулетку…', { reply_markup: mainKeyboard() });
+    await bot.sendMessage(chatId, '🎰 Крутим рулетку…', { reply_markup: mainKeyboard(userId) });
     const resultText = `🎰 Рулетка прокручена!\n\n🎁 Вы выиграли: ${prizeName}\n💰 Новый баланс: ${newBalance} баллов.`;
     setTimeout(() => {
-      bot.sendMessage(chatId, resultText, { reply_markup: mainKeyboard() }).catch(() => {});
+      bot.sendMessage(chatId, resultText, { reply_markup: mainKeyboard(userId) }).catch(() => {});
     }, 15000);
   } catch (err) {
     if (err.response?.status === 401) {
@@ -161,25 +198,39 @@ async function doSpin(bot, chatId, userId, latitude, longitude) {
       await bot.sendMessage(chatId, 'Сессия истекла. Войдите снова: /login');
     } else {
       const message = err.response?.data?.message || err.message || 'Ошибка прокрутки';
-      await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard() });
+      const isOutOfRadius = /не в радиусе|200\s*м/i.test(String(message));
+      if (isOutOfRadius) {
+        store.clearGeoSession(userId);
+        await bot.sendMessage(chatId, '❌ ' + message, {
+          reply_markup: mainKeyboard(userId),
+        });
+      } else {
+        await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard(userId) });
+      }
     }
   }
 }
 
 /** Регистрируем все хендлеры на bot */
 export function registerHandlers(bot) {
-  // ——— Получили геолокацию — спин (если ждали локацию) ———
+  // ——— Получили геолокацию — подтверждение клуба (гео-сессия 60 мин) ———
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!msg.location) return;
 
-    if (!store.getPendingSpin(chatId)) return;
+    const token = store.getToken(userId);
+    if (!token) return; // не залогинен — игнорируем случайную геолокацию
 
     const lat = msg.location.latitude;
     const lon = msg.location.longitude;
-    store.clearPendingSpin(chatId);
-    await doSpin(bot, chatId, userId, lat, lon);
+    store.setGeoSession(userId, lat, lon, GEO_SESSION_MS);
+    const statusText = getSessionStatusText(userId);
+    await bot.sendMessage(
+      chatId,
+      `✅ Геолокация получена.\n\n${statusText || 'Сессия активна.'}\n\nМожно крутить рулетку.`,
+      { reply_markup: mainKeyboard(userId) }
+    );
   });
 
   // ——— Получили контакт из Telegram — пробуем вход, при необходимости просим имя для регистрации ———
@@ -201,19 +252,21 @@ export function registerHandlers(bot) {
 
     const api = createApiClient();
     const code = '0000';
+    const ref = store.getReferralPayload(userId);
     try {
-      let data = await api.login(phone, code);
+      let data = await api.login(phone, code, ref);
       if (data && data.token) {
         store.setToken(userId, data.token, phone);
+        if (ref) store.clearReferralPayload(userId);
         await bot.sendMessage(chatId, `✅ Вы вошли!\nТелефон: ${phone}`, {
-          reply_markup: mainKeyboard(),
+          reply_markup: mainKeyboard(userId),
         });
         return;
       }
     } catch (_) {
       // Вход не удался — возможно, пользователь не зарегистрирован
     }
-    // Требуется регистрация: запрашиваем имя
+    // Требуется регистрация: запрашиваем имя (ref передадим при register)
     store.setPendingLoginAwaitName(chatId, phone);
     await bot.sendMessage(chatId, 'Введите ваше имя для регистрации:');
   });
@@ -272,7 +325,7 @@ export function registerHandlers(bot) {
     }
     if (data === 'profile_change_name') {
       store.setPendingChangeName(chatId);
-      await bot.sendMessage(chatId, 'Введите новое имя:', { reply_markup: mainKeyboard() });
+      await bot.sendMessage(chatId, 'Введите новое имя:', { reply_markup: mainKeyboard(userId) });
     }
   });
 
@@ -288,10 +341,10 @@ export function registerHandlers(bot) {
     const api = createApiClient(store.getToken(userId));
     try {
       await api.updatePlayerMe({ name: text });
-      await bot.sendMessage(chatId, `✅ Имя изменено на «${text}»`, { reply_markup: mainKeyboard() });
+      await bot.sendMessage(chatId, `✅ Имя изменено на «${text}»`, { reply_markup: mainKeyboard(userId) });
     } catch (err) {
       const message = err.response?.data?.message || err.message || 'Не удалось изменить имя';
-      await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard() });
+      await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard(userId) });
     }
   });
 
@@ -304,13 +357,15 @@ export function registerHandlers(bot) {
     if (pendingLogin?.step === 'await_name' && pendingLogin.phone && text && !/^\/\w+/.test(text)) {
       const api = createApiClient();
       const code = '0000';
+      const ref = store.getReferralPayload(userId);
       try {
-        const data = await api.register(pendingLogin.phone, code, text);
+        const data = await api.register(pendingLogin.phone, code, text, ref);
         store.clearPendingLogin(chatId);
+        if (ref) store.clearReferralPayload(userId);
         if (data && data.token) {
           store.setToken(userId, data.token, pendingLogin.phone);
           await bot.sendMessage(chatId, `✅ Вы зарегистрированы!\nТелефон: ${pendingLogin.phone}`, {
-            reply_markup: mainKeyboard(),
+            reply_markup: mainKeyboard(userId),
           });
         } else {
           await bot.sendMessage(chatId, '❌ Не удалось зарегистрироваться. Попробуйте /login снова.');
@@ -338,21 +393,32 @@ export function registerHandlers(bot) {
       await sendBalance(bot, chatId, userId);
       return;
     }
-    // Кнопка «Крутить рулетку» — запрашиваем только геолокацию
+    // Кнопка «Крутить рулетку» — проверяем гео-сессию и лимит спинов
     if (text === '🎰 Крутить рулетку') {
       const token = store.getToken(userId);
       if (!token) {
-        await bot.sendMessage(chatId, 'Сначала войдите: /login');
+        await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
         return;
       }
-      store.setPendingSpin(chatId);
-      await bot.sendMessage(chatId, 'Отправьте геолокацию, чтобы подтвердить нахождение в клубе:', {
-        reply_markup: {
-          keyboard: [[{ text: '📍 Отправить геолокацию', request_location: true }]],
-          one_time_keyboard: true,
-          resize_keyboard: true,
-        },
-      });
+      const geo = store.getGeoSession(userId);
+      if (!geo) {
+        await bot.sendMessage(
+          chatId,
+          'Сессия закончилась — подтвердите клуб ещё раз.',
+          { reply_markup: mainKeyboard(userId) }
+        );
+        return;
+      }
+      if (!store.canSpin(userId)) {
+        await bot.sendMessage(
+          chatId,
+          'Превышен лимит: не более 5 спинов за 10 минут. Попробуйте позже.',
+          { reply_markup: mainKeyboard(userId) }
+        );
+        return;
+      }
+      store.recordSpin(userId);
+      await doSpin(bot, chatId, userId, geo.latitude, geo.longitude);
       return;
     }
     // Кнопка «Мой профиль»
@@ -360,32 +426,88 @@ export function registerHandlers(bot) {
       await sendProfile(bot, chatId, userId);
       return;
     }
+    // Кнопка «Пригласить друга» — GET /api/players/me, показать ссылку + «Поделиться»
+    if (text === '👥 Пригласить друга') {
+      const token = store.getToken(userId);
+      if (!token) {
+        await bot.sendMessage(chatId, 'Сначала войдите: /login', { reply_markup: mainKeyboard(userId) });
+        return;
+      }
+      const api = createApiClient(token);
+      try {
+        const me = await api.getPlayerMe();
+        const referralCode =
+          me?.referralCode ?? (me?._id ? `ref_${me._id}` : null);
+        let referralLink = me?.referralLink || null;
+        if (!referralLink && referralCode) {
+          const botUsername =
+            (process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '') ||
+            (await bot.getMe()).username;
+          if (botUsername) {
+            referralLink = `https://t.me/${botUsername}?start=${referralCode}`;
+          }
+        }
+        const points = me?.referralPointsPerFriend ?? 50;
+        const lines = [
+          '👥 Пригласи друга',
+          '',
+          referralLink
+            ? `Твоя ссылка для приглашения:\n${referralLink}`
+            : 'Ссылка временно недоступна.',
+          '',
+          `Ты получишь ${points} баллов, когда друг зарегистрируется и сделает 1‑й платный спин.`,
+        ];
+        const message = lines.join('\n');
+        const shareUrl =
+          referralLink &&
+          `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent('Присоединяйся к клубу!')}`;
+        await bot.sendMessage(chatId, message, {
+          reply_markup: shareUrl
+            ? { inline_keyboard: [[{ text: '📤 Поделиться', url: shareUrl }]] }
+            : undefined,
+        });
+      } catch (err) {
+        if (err.response?.status === 401) {
+          store.removeToken(userId);
+          await bot.sendMessage(chatId, 'Сессия истекла. Войдите снова: /login');
+        } else {
+          await bot.sendMessage(chatId, '❌ ' + (err.response?.data?.message || err.message));
+        }
+      }
+      return;
+    }
   });
 
-  // ——— /start ———
-  bot.onText(/\/start/, async (msg) => {
+  // ——— /start [ref_XXX] — реферальная ссылка: сохраняем пригласившего, при логине/регистрации передаём ref ———
+  bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const token = store.getToken(userId);
+    const payload = (match && match[1] && match[1].trim()) || null;
+    if (payload) store.setReferralPayload(userId, payload);
 
+    const token = store.getToken(userId);
     const lines = [
       '👋 Добро пожаловать в бот клуба!',
       '',
+      payload
+        ? 'Вы перешли по приглашению. Войдите или зарегистрируйтесь — баллы пригласившему начислятся после вашего первого платного спина.'
+        : '',
       token
         ? 'Вы авторизованы. Используйте кнопки ниже или команды.'
         : 'Для доступа к балансу и рулетке нужно войти.',
       '',
       '📱 /login — войти',
       '💰 /balance — баланс',
-      '🎰 /spin — крутить рулетку (отправьте геолокацию)',
+      '🎰 /spin — крутить рулетку (после подтверждения клуба)',
       '👤 /profile — мой профиль',
+      '👥 Пригласить друга — реферальная ссылка',
       '🎁 /prizes — мои призы',
       '📜 /history — история',
       '🏆 /recent — последние выигрыши',
       '🚪 /logout — выйти',
-    ];
+    ].filter(Boolean);
     await bot.sendMessage(chatId, lines.join('\n'), {
-      reply_markup: token ? mainKeyboard() : undefined,
+      reply_markup: mainKeyboard(userId),
     });
   });
 
@@ -412,23 +534,34 @@ export function registerHandlers(bot) {
     await sendProfile(bot, msg.chat.id, msg.from?.id);
   });
 
-  // ——— /spin — запрашиваем только геолокацию
+  // ——— /spin — как кнопка: проверка гео-сессии и лимита, затем спин
   bot.onText(/\/spin$/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     const token = store.getToken(userId);
     if (!token) {
-      await bot.sendMessage(chatId, 'Сначала войдите: /login');
+      await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
       return;
     }
-    store.setPendingSpin(chatId);
-    await bot.sendMessage(chatId, 'Отправьте геолокацию, чтобы подтвердить нахождение в клубе:', {
-      reply_markup: {
-        keyboard: [[{ text: '📍 Отправить геолокацию', request_location: true }]],
-        one_time_keyboard: true,
-        resize_keyboard: true,
-      },
-    });
+    const geo = store.getGeoSession(userId);
+    if (!geo) {
+      await bot.sendMessage(
+        chatId,
+        'Сессия закончилась — подтвердите клуб ещё раз.',
+        { reply_markup: mainKeyboard(userId) }
+      );
+      return;
+    }
+    if (!store.canSpin(userId)) {
+      await bot.sendMessage(
+        chatId,
+        'Превышен лимит: не более 5 спинов за 10 минут. Попробуйте позже.',
+        { reply_markup: mainKeyboard(userId) }
+      );
+      return;
+    }
+    store.recordSpin(userId);
+    await doSpin(bot, chatId, userId, geo.latitude, geo.longitude);
   });
 
   // ——— /prizes ———
