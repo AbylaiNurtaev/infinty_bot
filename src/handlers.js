@@ -269,20 +269,15 @@ export function registerHandlers(bot) {
     } catch (_) {
       // Вход не удался — пользователь не зарегистрирован, идём в регистрацию (код друга → имя)
     }
-    // Требуется регистрация: если ref уже есть (по ссылке) — сразу имя, иначе спросить код друга (можно пропустить)
-    if (store.getReferralPayload(userId)) {
-      store.setPendingLoginAwaitName(chatId, phone);
-      await bot.sendMessage(chatId, 'Введите ваше имя для регистрации:');
-    } else {
-      store.setPendingLoginAwaitRef(chatId, phone);
-      await bot.sendMessage(chatId, 'Введите код друга (6 букв/цифр, например K7MN2P) или нажмите «Пропустить».', {
-        reply_markup: {
-          keyboard: [[{ text: 'Пропустить' }]],
-          one_time_keyboard: true,
-          resize_keyboard: true,
-        },
-      });
-    }
+    // Требуется регистрация: всегда сначала код друга (с Пропустить), потом имя
+    store.setPendingLoginAwaitRef(chatId, phone);
+    await bot.sendMessage(chatId, 'Введите код друга (6 букв/цифр, например K7MN2P) или нажмите «Пропустить».', {
+      reply_markup: {
+        keyboard: [[{ text: 'Пропустить' }]],
+        one_time_keyboard: true,
+        resize_keyboard: true,
+      },
+    });
   });
 
   // ——— Inline-кнопки в профиле (история, призы, изменить имя) ———
