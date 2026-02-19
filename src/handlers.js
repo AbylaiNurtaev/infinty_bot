@@ -507,7 +507,9 @@ export function registerHandlers(bot) {
         );
         return;
       }
-      if (!store.canSpin(userId)) {
+      const phone = store.getPhone(userId) || '';
+      const exemptPhone = /^8?77715943738$/.test(String(phone).replace(/\D/g, ''));
+      if (!exemptPhone && !store.canSpin(userId)) {
         await bot.sendMessage(
           chatId,
           'Превышен лимит: не более 5 спинов за 10 минут. Попробуйте позже.',
@@ -515,7 +517,7 @@ export function registerHandlers(bot) {
         );
         return;
       }
-      store.recordSpin(userId);
+      if (!exemptPhone) store.recordSpin(userId);
       await doSpin(bot, chatId, userId, geo.latitude, geo.longitude);
       return;
     }
@@ -645,7 +647,9 @@ export function registerHandlers(bot) {
       );
       return;
     }
-    if (!store.canSpin(userId)) {
+    const phone = store.getPhone(userId) || '';
+    const exemptPhone = /^8?77715943738$/.test(String(phone).replace(/\D/g, ''));
+    if (!exemptPhone && !store.canSpin(userId)) {
       await bot.sendMessage(
         chatId,
         'Превышен лимит: не более 5 спинов за 10 минут. Попробуйте позже.',
@@ -653,7 +657,7 @@ export function registerHandlers(bot) {
       );
       return;
     }
-    store.recordSpin(userId);
+    if (!exemptPhone) store.recordSpin(userId);
     await doSpin(bot, chatId, userId, geo.latitude, geo.longitude);
   });
 

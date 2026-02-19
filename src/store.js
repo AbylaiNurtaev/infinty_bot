@@ -44,6 +44,10 @@ export const store = {
     return tokens[String(telegramUserId)]?.token ?? null;
   },
 
+  getPhone(telegramUserId) {
+    return tokens[String(telegramUserId)]?.phone ?? null;
+  },
+
   setToken(telegramUserId, token, phone) {
     tokens[String(telegramUserId)] = { token, phone: phone || tokens[String(telegramUserId)]?.phone };
     save();
