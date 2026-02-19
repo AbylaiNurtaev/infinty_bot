@@ -7,7 +7,7 @@ const STORE_PATH = path.join(__dirname, '..', 'store.json');
 
 /** telegramUserId -> { token, phone? } */
 let tokens = {};
-/** chatId -> { step: 'await_code'|'await_name', phone?: string } для сценария входа/регистрации */
+/** chatId -> { step: 'await_code'|'await_ref'|'await_name', phone?: string } для сценария входа/регистрации */
 let pendingLogin = {};
 /** chatId -> true когда ждём новое имя в профиле */
 let pendingChangeName = {};
@@ -58,7 +58,12 @@ export const store = {
     pendingLogin[chatId] = { step: 'await_code', phone: phone ?? null };
   },
 
-  /** После контакта: ждём имя для регистрации */
+  /** После контакта: ждём код друга (можно пропустить), затем имя */
+  setPendingLoginAwaitRef(chatId, phone) {
+    pendingLogin[chatId] = { step: 'await_ref', phone };
+  },
+
+  /** Ждём имя для регистрации */
   setPendingLoginAwaitName(chatId, phone) {
     pendingLogin[chatId] = { step: 'await_name', phone };
   },

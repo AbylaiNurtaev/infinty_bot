@@ -266,9 +266,20 @@ export function registerHandlers(bot) {
     } catch (_) {
       // Вход не удался — возможно, пользователь не зарегистрирован
     }
-    // Требуется регистрация: запрашиваем имя (ref передадим при register)
-    store.setPendingLoginAwaitName(chatId, phone);
-    await bot.sendMessage(chatId, 'Введите ваше имя для регистрации:');
+    // Требуется регистрация: если ref уже есть (по ссылке) — сразу имя, иначе спросить код друга (можно пропустить)
+    if (store.getReferralPayload(userId)) {
+      store.setPendingLoginAwaitName(chatId, phone);
+      await bot.sendMessage(chatId, 'Введите ваше имя для регистрации:');
+    } else {
+      store.setPendingLoginAwaitRef(chatId, phone);
+      await bot.sendMessage(chatId, 'Введите код друга (6 букв/цифр, например K7MN2P) или нажмите «Пропустить».', {
+        reply_markup: {
+          keyboard: [[{ text: 'Пропустить' }]],
+          one_time_keyboard: true,
+          resize_keyboard: true,
+        },
+      });
+    }
   });
 
   // ——— Inline-кнопки в профиле (история, призы, изменить имя) ———
@@ -376,6 +387,38 @@ export function registerHandlers(bot) {
     }
   });
 
+  // ——— Ожидание кода друга при регистрации (или «Пропустить») ———
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const text = (msg.text || '').trim();
+    const pendingLogin = store.getPendingLogin(chatId);
+    if (pendingLogin?.step !== 'await_ref' || !pendingLogin.phone || !text || /^\/\w+/.test(text)) return;
+    if (msg.contact || msg.location) return;
+
+    const isSkip = /^(пропустить|skip)$/i.test(text);
+    const validCode = /^(ref_)?[A-Za-z0-9]{6}$/.test(text);
+    if (isSkip) {
+      store.setPendingLoginAwaitName(chatId, pendingLogin.phone);
+      await bot.sendMessage(chatId, 'Введите ваше имя для регистрации:', {
+        reply_markup: { remove_keyboard: true },
+      });
+      return;
+    }
+    if (validCode) {
+      store.setReferralPayload(userId, text);
+      store.setPendingLoginAwaitName(chatId, pendingLogin.phone);
+      await bot.sendMessage(chatId, 'Код друга сохранён. Введите ваше имя для регистрации:', {
+        reply_markup: { remove_keyboard: true },
+      });
+      return;
+    }
+    await bot.sendMessage(
+      chatId,
+      'Введите 6-значный код друга (например K7MN2P) или нажмите «Пропустить».'
+    );
+  });
+
   // ——— Ожидание имени при регистрации ———
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -454,7 +497,7 @@ export function registerHandlers(bot) {
       await sendProfile(bot, chatId, userId);
       return;
     }
-    // Кнопка «Пригласить друга» — GET /api/players/me: 6-значный код, ссылка, «Поделиться»
+    // Кнопка «Пригласить друга» — только код: первое сообщение с текстом и кодом, второе — только код для копирования
     if (text === '👥 Пригласить друга') {
       const token = store.getToken(userId);
       if (!token) {
@@ -465,35 +508,20 @@ export function registerHandlers(bot) {
       try {
         const me = await api.getPlayerMe();
         const referralCode = me?.referralCode || null;
-        let referralLink = me?.referralLink || null;
-        if (!referralLink && referralCode) {
-          const botUsername =
-            (process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '') ||
-            (await bot.getMe()).username;
-          if (botUsername) {
-            referralLink = `https://t.me/${botUsername}?start=ref_${referralCode}`;
-          }
-        }
         const points = me?.referralPointsPerFriend ?? 5;
         const lines = [
-          '👥 Пригласи друга',
+          '👥 Ваш реферальный код',
           '',
-          referralCode ? `Твой код для друзей: ${referralCode}` : '',
-          referralCode ? 'Друг может ввести его в боте или перейти по ссылке.' : '',
+          referralCode ? referralCode : '',
           '',
-          referralLink ? `Ссылка:\n${referralLink}` : 'Ссылка временно недоступна.',
+          'Друг вводит этот код в боте при регистрации.',
           '',
           `Ты получишь ${points} баллов, когда друг зарегистрируется и сделает 1‑й платный спин.`,
         ].filter(Boolean);
-        const message = lines.join('\n');
-        const shareUrl =
-          referralLink &&
-          `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent('Присоединяйся к клубу!')}`;
-        await bot.sendMessage(chatId, message, {
-          reply_markup: shareUrl
-            ? { inline_keyboard: [[{ text: '📤 Поделиться', url: shareUrl }]] }
-            : undefined,
-        });
+        await bot.sendMessage(chatId, lines.join('\n'));
+        if (referralCode) {
+          await bot.sendMessage(chatId, referralCode);
+        }
       } catch (err) {
         if (err.response?.status === 401) {
           store.removeToken(userId);
