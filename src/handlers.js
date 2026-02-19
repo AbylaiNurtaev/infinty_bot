@@ -423,29 +423,36 @@ export function registerHandlers(bot) {
     const userId = msg.from?.id;
     const text = (msg.text || '').trim();
     const pendingLogin = store.getPendingLogin(chatId);
-    if (pendingLogin?.step === 'await_name' && pendingLogin.phone && text && !/^\/\w+/.test(text)) {
-      const api = createApiClient();
-      const code = '0000';
-      const ref = store.getReferralPayload(userId);
-      try {
-        const data = await api.register(pendingLogin.phone, code, text, ref);
-        store.clearPendingLogin(chatId);
-        if (ref) store.clearReferralPayload(userId);
-        if (data && data.token) {
-          store.setToken(userId, data.token, pendingLogin.phone);
-          await bot.sendMessage(chatId, `✅ Вы зарегистрированы!\nТелефон: ${pendingLogin.phone}`, {
-            reply_markup: mainKeyboard(userId),
-          });
-        } else {
-          await bot.sendMessage(chatId, '❌ Не удалось зарегистрироваться. Попробуйте /login снова.');
-        }
-      } catch (err) {
-        const message = err.response?.data?.message || err.message || 'Ошибка регистрации';
-        await bot.sendMessage(chatId, `❌ ${message}\nПопробуйте /login снова.`);
-      }
+    if (pendingLogin?.step !== 'await_name' || !pendingLogin.phone || !text || /^\/\w+/.test(text)) {
+      if (pendingLogin?.step === 'await_name') return;
       return;
     }
-    if (pendingLogin) return; // в процессе входа (ждём контакт)
+    if (msg.contact || msg.location) return;
+    // Не принимать реферальный код как имя (тот же message может обработать и await_ref, и этот handler)
+    if (/^(ref_)?[A-Za-z0-9]{6}$/.test(text)) {
+      await bot.sendMessage(chatId, 'Введите ваше имя для регистрации (не код):');
+      return;
+    }
+    const api = createApiClient();
+    const code = '0000';
+    const ref = store.getReferralPayload(userId);
+    try {
+      const data = await api.register(pendingLogin.phone, code, text, ref);
+      store.clearPendingLogin(chatId);
+      if (ref) store.clearReferralPayload(userId);
+      if (data && data.token) {
+        store.setToken(userId, data.token, pendingLogin.phone);
+        await bot.sendMessage(chatId, `✅ Вы зарегистрированы!\nТелефон: ${pendingLogin.phone}`, {
+          reply_markup: mainKeyboard(userId),
+        });
+      } else {
+        await bot.sendMessage(chatId, '❌ Не удалось зарегистрироваться. Попробуйте /login снова.');
+      }
+    } catch (err) {
+      const message = err.response?.data?.message || err.message || 'Ошибка регистрации';
+      await bot.sendMessage(chatId, `❌ ${message}\nПопробуйте /login снова.`);
+    }
+    return;
   });
 
   // ——— Кнопки и спин ———
