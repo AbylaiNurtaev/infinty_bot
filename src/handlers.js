@@ -327,6 +327,34 @@ export function registerHandlers(bot) {
       store.setPendingChangeName(chatId);
       await bot.sendMessage(chatId, 'Введите новое имя:', { reply_markup: mainKeyboard(userId) });
     }
+    if (data === 'referral_enter_code') {
+      store.setAwaitReferralCode(chatId);
+      await bot.sendMessage(
+        chatId,
+        'Отправь код друга (6 букв/цифр, например K7MN2P). Его тебе мог прислать пригласивший.'
+      );
+    }
+  });
+
+  // ——— Ожидание кода друга: 6 символов (K7MN2P) или ref_K7MN2P; бэкенд принимает оба формата ———
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const text = (msg.text || '').trim();
+    if (!store.getAwaitReferralCode(chatId) || !text || /^\/\w+/.test(text)) return;
+    if (msg.contact || msg.location) return;
+    const validCode = /^(ref_)?[A-Za-z0-9]{6}$/.test(text);
+    if (!validCode) {
+      await bot.sendMessage(chatId, 'Введи 6-значный код друга (например K7MN2P). Попробуй ещё раз или нажми /login.');
+      return;
+    }
+    store.clearAwaitReferralCode(chatId);
+    store.setReferralPayload(userId, text);
+    await bot.sendMessage(
+      chatId,
+      '✅ Код друга сохранён. Нажми «📱 Войти» или /login — баллы пригласившему начислятся после твоего первого платного спина.',
+      { reply_markup: mainKeyboard(userId) }
+    );
   });
 
   // ——— Ожидание нового имени (из профиля) ———
@@ -426,7 +454,7 @@ export function registerHandlers(bot) {
       await sendProfile(bot, chatId, userId);
       return;
     }
-    // Кнопка «Пригласить друга» — GET /api/players/me, показать ссылку + «Поделиться»
+    // Кнопка «Пригласить друга» — GET /api/players/me: 6-значный код, ссылка, «Поделиться»
     if (text === '👥 Пригласить друга') {
       const token = store.getToken(userId);
       if (!token) {
@@ -436,27 +464,27 @@ export function registerHandlers(bot) {
       const api = createApiClient(token);
       try {
         const me = await api.getPlayerMe();
-        const referralCode =
-          me?.referralCode ?? (me?._id ? `ref_${me._id}` : null);
+        const referralCode = me?.referralCode || null;
         let referralLink = me?.referralLink || null;
         if (!referralLink && referralCode) {
           const botUsername =
             (process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '') ||
             (await bot.getMe()).username;
           if (botUsername) {
-            referralLink = `https://t.me/${botUsername}?start=${referralCode}`;
+            referralLink = `https://t.me/${botUsername}?start=ref_${referralCode}`;
           }
         }
-        const points = me?.referralPointsPerFriend ?? 50;
+        const points = me?.referralPointsPerFriend ?? 5;
         const lines = [
           '👥 Пригласи друга',
           '',
-          referralLink
-            ? `Твоя ссылка для приглашения:\n${referralLink}`
-            : 'Ссылка временно недоступна.',
+          referralCode ? `Твой код для друзей: ${referralCode}` : '',
+          referralCode ? 'Друг может ввести его в боте или перейти по ссылке.' : '',
+          '',
+          referralLink ? `Ссылка:\n${referralLink}` : 'Ссылка временно недоступна.',
           '',
           `Ты получишь ${points} баллов, когда друг зарегистрируется и сделает 1‑й платный спин.`,
-        ];
+        ].filter(Boolean);
         const message = lines.join('\n');
         const shareUrl =
           referralLink &&
@@ -478,11 +506,14 @@ export function registerHandlers(bot) {
     }
   });
 
-  // ——— /start [ref_XXX] — реферальная ссылка: сохраняем пригласившего, при логине/регистрации передаём ref ———
+  // ——— /start [ref_XXX] — реферальная ссылка. Payload берём из текста (на некоторых клиентах кнопка «Start» шлёт только /start) ———
   bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const payload = (match && match[1] && match[1].trim()) || null;
+    const rawText = (msg.text || '').trim();
+    const payloadFromRegex = match && match[1] && match[1].trim();
+    const payloadFromText = rawText.startsWith('/start') ? rawText.slice(6).trim() || null : null;
+    const payload = payloadFromRegex || payloadFromText || null;
     if (payload) store.setReferralPayload(userId, payload);
 
     const token = store.getToken(userId);
@@ -509,6 +540,13 @@ export function registerHandlers(bot) {
     await bot.sendMessage(chatId, lines.join('\n'), {
       reply_markup: mainKeyboard(userId),
     });
+    if (!payload && !token) {
+      await bot.sendMessage(chatId, 'У тебя есть код друга? Нажми кнопку ниже и введи его (6 букв/цифр, например K7MN2P).', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔗 Ввести код друга', callback_data: 'referral_enter_code' }]],
+        },
+      });
+    }
   });
 
   // ——— /login ———

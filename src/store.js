@@ -13,6 +13,8 @@ let pendingLogin = {};
 let pendingChangeName = {};
 /** telegramUserId -> ref payload (например ref_12345) — пригласивший, сохраняется до первого логина/регистрации */
 let referralPayloadByUser = {};
+/** chatId -> true когда ждём ввод реферального кода (fallback, если по ссылке пришёл только /start) */
+let awaitReferralCode = {};
 /** userId -> { expiresAt, latitude, longitude } — гео-сессия 60 мин (в памяти) */
 let geoSessions = {};
 /** userId -> number[] — время последних спинов для лимита 5 за 10 мин */
@@ -128,5 +130,15 @@ export const store = {
 
   clearReferralPayload(telegramUserId) {
     delete referralPayloadByUser[String(telegramUserId)];
+  },
+
+  setAwaitReferralCode(chatId) {
+    awaitReferralCode[chatId] = true;
+  },
+  getAwaitReferralCode(chatId) {
+    return !!awaitReferralCode[chatId];
+  },
+  clearAwaitReferralCode(chatId) {
+    delete awaitReferralCode[chatId];
   },
 };
