@@ -61,14 +61,19 @@ function getSessionStatusText(userId) {
   return `Сессия активна до ${timeStr} (ещё ${minsLeft} мин.)`;
 }
 
+/** Клавиатура «Войти» — без отправки номера; по нажатию показываем запрос контакта в /login */
+function loginPromptKeyboard() {
+  return {
+    keyboard: [[{ text: 'Войти' }]],
+    resize_keyboard: true,
+  };
+}
+
 /** Клавиатура по состоянию: Войти / Подтвердить клуб / Крутить рулетку + баланс и профиль */
 function mainKeyboard(userId) {
   const token = store.getToken(userId);
   if (!token) {
-    return {
-      keyboard: [[{ text: '📱 Войти', request_contact: true }]],
-      resize_keyboard: true,
-    };
+    return loginPromptKeyboard();
   }
   const geo = store.getGeoSession(userId);
   if (!geo) {
@@ -137,7 +142,7 @@ async function sendBalance(bot, chatId, userId) {
 async function sendProfile(bot, chatId, userId) {
   const token = store.getToken(userId);
   if (!token) {
-    await bot.sendMessage(chatId, 'Сначала войдите: /login');
+    await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
     return;
   }
   const api = createApiClient(token);
@@ -172,7 +177,7 @@ async function sendProfile(bot, chatId, userId) {
 async function doSpin(bot, chatId, userId, latitude, longitude) {
   const token = store.getToken(userId);
   if (!token) {
-    await bot.sendMessage(chatId, 'Сначала войдите: /login');
+    await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
     return;
   }
   const api = createApiClient(token);
@@ -252,19 +257,17 @@ export function registerHandlers(bot) {
 
     const api = createApiClient();
     const code = '0000';
-    const ref = store.getReferralPayload(userId);
     try {
-      let data = await api.login(phone, code, ref);
+      let data = await api.login(phone, code);
       if (data && data.token) {
         store.setToken(userId, data.token, phone);
-        if (ref) store.clearReferralPayload(userId);
         await bot.sendMessage(chatId, `✅ Вы вошли!\nТелефон: ${phone}`, {
           reply_markup: mainKeyboard(userId),
         });
         return;
       }
     } catch (_) {
-      // Вход не удался — возможно, пользователь не зарегистрирован
+      // Вход не удался — пользователь не зарегистрирован, идём в регистрацию (код друга → имя)
     }
     // Требуется регистрация: если ref уже есть (по ссылке) — сразу имя, иначе спросить код друга (можно пропустить)
     if (store.getReferralPayload(userId)) {
@@ -294,7 +297,7 @@ export function registerHandlers(bot) {
     if (data === 'profile_history') {
       const token = store.getToken(userId);
       if (!token) {
-        await bot.sendMessage(chatId, 'Сначала войдите: /login');
+        await bot.sendMessage(chatId, 'Сначала войдите.');
         return;
       }
       const api = createApiClient(token);
@@ -316,7 +319,7 @@ export function registerHandlers(bot) {
     if (data === 'profile_prizes') {
       const token = store.getToken(userId);
       if (!token) {
-        await bot.sendMessage(chatId, 'Сначала войдите: /login');
+        await bot.sendMessage(chatId, 'Сначала войдите.');
         return;
       }
       const api = createApiClient(token);
@@ -459,6 +462,21 @@ export function registerHandlers(bot) {
     const pendingLogin = store.getPendingLogin(chatId);
     if (pendingLogin) return; // в процессе входа
 
+    // Кнопка «Войти» — показать запрос номера (команда /login)
+    if (text === 'Войти') {
+      if (!store.getToken(userId)) {
+        store.setPendingLogin(chatId, null);
+        await bot.sendMessage(chatId, 'Нажмите кнопку ниже, чтобы отправить номер телефона из Telegram.', {
+          reply_markup: {
+            keyboard: [[{ text: '📱 Отправить мой номер', request_contact: true }]],
+            one_time_keyboard: true,
+            resize_keyboard: true,
+          },
+        });
+      }
+      return;
+    }
+
     // Кнопка «Мой баланс»
     if (text === '💰 Мой баланс') {
       await sendBalance(bot, chatId, userId);
@@ -501,7 +519,7 @@ export function registerHandlers(bot) {
     if (text === '👥 Пригласить друга') {
       const token = store.getToken(userId);
       if (!token) {
-        await bot.sendMessage(chatId, 'Сначала войдите: /login', { reply_markup: mainKeyboard(userId) });
+        await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
         return;
       }
       const api = createApiClient(token);
@@ -636,7 +654,7 @@ export function registerHandlers(bot) {
     const userId = msg.from?.id;
     const token = store.getToken(userId);
     if (!token) {
-      await bot.sendMessage(chatId, 'Сначала войдите: /login');
+      await bot.sendMessage(chatId, 'Сначала войдите.');
       return;
     }
     const api = createApiClient(token);
@@ -665,7 +683,7 @@ export function registerHandlers(bot) {
     const userId = msg.from?.id;
     const token = store.getToken(userId);
     if (!token) {
-      await bot.sendMessage(chatId, 'Сначала войдите: /login');
+      await bot.sendMessage(chatId, 'Сначала войдите.');
       return;
     }
     const api = createApiClient(token);
