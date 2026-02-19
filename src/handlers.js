@@ -196,22 +196,29 @@ async function doSpin(bot, chatId, userId, latitude, longitude) {
     const resultText = `🎰 Рулетка прокручена!\n\n🎁 Вы выиграли: ${prizeName}\n💰 Новый баланс: ${newBalance} баллов.`;
     setTimeout(() => {
       bot.sendMessage(chatId, resultText, { reply_markup: mainKeyboard(userId) }).catch(() => {});
-    }, 15000);
+    }, 20000);
   } catch (err) {
     if (err.response?.status === 401) {
       store.removeToken(userId);
       await bot.sendMessage(chatId, 'Сессия истекла. Войдите снова: /login');
+      return;
+    }
+    if (err.response?.status === 429) {
+      const message = err.response?.data?.message || 'Рулетка занята, попробуйте позже';
+      const retryAfter = err.response?.data?.retryAfterSeconds ?? 15;
+      const text = `❌ ${message}\n\nПопробуйте снова через ${retryAfter} сек.`;
+      await bot.sendMessage(chatId, text, { reply_markup: mainKeyboard(userId) });
+      return;
+    }
+    const message = err.response?.data?.message || err.message || 'Ошибка прокрутки';
+    const isOutOfRadius = /не в радиусе|200\s*м/i.test(String(message));
+    if (isOutOfRadius) {
+      store.clearGeoSession(userId);
+      await bot.sendMessage(chatId, '❌ ' + message, {
+        reply_markup: mainKeyboard(userId),
+      });
     } else {
-      const message = err.response?.data?.message || err.message || 'Ошибка прокрутки';
-      const isOutOfRadius = /не в радиусе|200\s*м/i.test(String(message));
-      if (isOutOfRadius) {
-        store.clearGeoSession(userId);
-        await bot.sendMessage(chatId, '❌ ' + message, {
-          reply_markup: mainKeyboard(userId),
-        });
-      } else {
-        await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard(userId) });
-      }
+      await bot.sendMessage(chatId, '❌ ' + message, { reply_markup: mainKeyboard(userId) });
     }
   }
 }
