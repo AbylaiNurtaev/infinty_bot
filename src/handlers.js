@@ -1,5 +1,6 @@
 import { createApiClient } from './api.js';
 import { store } from './store.js';
+import { applyLocalTopUpByPhone, getLocalTopUpPackages } from './directTopUp.js';
 
 const MIN_BALANCE_FOR_SPIN = 20;
 const GEO_SESSION_MS = 60 * 60 * 1000; // 60 минут
@@ -123,14 +124,12 @@ function topUpPackagesInlineKeyboard(packages = []) {
 }
 
 async function sendTopUpPackages(bot, chatId, userId) {
-  const token = store.getToken(userId);
-  if (!token) {
+  if (!store.getToken(userId)) {
     await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
     return;
   }
-  const api = createApiClient(token);
   try {
-    const packages = await api.getTopUpPackages();
+    const packages = getLocalTopUpPackages();
     if (!packages.length) {
       await bot.sendMessage(chatId, 'Сейчас пакеты пополнения недоступны. Попробуйте позже.');
       return;
@@ -148,7 +147,7 @@ async function sendTopUpPackages(bot, chatId, userId) {
       reply_markup: topUpPackagesInlineKeyboard(packages),
     });
   } catch (err) {
-    const message = err.response?.data?.message || err.message || 'Не удалось получить пакеты пополнения';
+    const message = err.message || 'Не удалось получить пакеты пополнения';
     await bot.sendMessage(chatId, `❌ ${message}`);
   }
 }
@@ -354,8 +353,7 @@ export function registerHandlers(bot) {
     }
     if (data.startsWith('buy_pkg:')) {
       const packageId = data.slice('buy_pkg:'.length).trim();
-      const token = store.getToken(userId);
-      if (!token) {
+      if (!store.getToken(userId)) {
         await bot.sendMessage(chatId, 'Сначала войдите.');
         return;
       }
@@ -363,68 +361,20 @@ export function registerHandlers(bot) {
         await bot.sendMessage(chatId, 'Не удалось определить пакет. Выберите пакет ещё раз.');
         return;
       }
-      const api = createApiClient(token);
       try {
-        const order = await api.createTopUpOrder(packageId);
-        const externalId = order?.externalId || order?.order?.externalId || order?.invoiceId || null;
-        const widgetParams = order?.widgetParams || {};
-        const paymentUrl = widgetParams.paymentUrl || widgetParams.url || order?.paymentUrl || order?.checkoutUrl || null;
-        const lines = [
-          '✅ Заказ на пополнение создан.',
-          externalId ? `ID заказа: ${externalId}` : null,
-          '',
-          paymentUrl
-            ? 'Нажмите кнопку ниже, чтобы перейти к оплате.'
-            : 'Оплата проходит через виджет TipTop. Если ссылка не пришла, откройте оплату в вашем фронтенде.',
-          externalId ? 'После оплаты нажмите «Проверить оплату».' : null,
-        ].filter(Boolean);
-        const inline_keyboard = [];
-        if (paymentUrl) inline_keyboard.push([{ text: '💳 Перейти к оплате', url: paymentUrl }]);
-        if (externalId) inline_keyboard.push([{ text: '🔄 Проверить оплату', callback_data: `buy_chk:${externalId}` }]);
-        await bot.sendMessage(chatId, lines.join('\n'), {
-          reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
-        });
-      } catch (err) {
-        const message = err.response?.data?.message || err.message || 'Не удалось создать заказ';
-        await bot.sendMessage(chatId, `❌ ${message}`);
-      }
-      return;
-    }
-    if (data.startsWith('buy_chk:')) {
-      const externalId = data.slice('buy_chk:'.length).trim();
-      const token = store.getToken(userId);
-      if (!token) {
-        await bot.sendMessage(chatId, 'Сначала войдите.');
-        return;
-      }
-      if (!externalId) {
-        await bot.sendMessage(chatId, 'Некорректный ID заказа. Создайте заказ заново.');
-        return;
-      }
-      const api = createApiClient(token);
-      try {
-        const order = await api.getTopUpOrderStatus(externalId);
-        const status = String(order?.status || 'unknown').toLowerCase();
-        if (status === 'paid') {
-          const balance = order?.balanceAfter ?? order?.newBalance;
-          await bot.sendMessage(
-            chatId,
-            balance != null
-              ? `✅ Оплата подтверждена. Баллы зачислены.\n💰 Новый баланс: ${balance} баллов.`
-              : '✅ Оплата подтверждена. Баллы зачислены.'
-          );
+        const phone = store.getPhone(userId);
+        if (!phone) {
+          await bot.sendMessage(chatId, 'Не найден телефон аккаунта. Выполните вход заново через /login.');
           return;
         }
-        const statusText =
-          status === 'pending' ? 'Ожидает оплату' :
-          status === 'created' ? 'Заказ создан' :
-          status === 'failed' ? 'Оплата не прошла' :
-          status;
-        await bot.sendMessage(chatId, `Статус заказа: ${statusText}`, {
-          reply_markup: { inline_keyboard: [[{ text: '🔄 Проверить оплату', callback_data: `buy_chk:${externalId}` }]] },
-        });
+        const result = await applyLocalTopUpByPhone(phone, packageId);
+        await bot.sendMessage(
+          chatId,
+          `✅ Баллы зачислены: +${result.pointsAdded}\n💰 Новый баланс: ${result.newBalance} баллов.`,
+          { reply_markup: mainKeyboard(userId) }
+        );
       } catch (err) {
-        const message = err.response?.data?.message || err.message || 'Не удалось проверить статус заказа';
+        const message = err.message || 'Не удалось зачислить баллы';
         await bot.sendMessage(chatId, `❌ ${message}`);
       }
       return;
