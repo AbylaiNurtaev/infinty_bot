@@ -80,6 +80,7 @@ function mainKeyboard(userId) {
     return {
       keyboard: [
         [{ text: '💰 Мой баланс' }, { text: '📍 Подтвердить клуб', request_location: true }],
+        [{ text: '💳 Купить баллы' }],
         [{ text: '👤 Мой профиль' }, { text: '👥 Пригласить друга' }],
       ],
       resize_keyboard: true,
@@ -88,6 +89,7 @@ function mainKeyboard(userId) {
   return {
     keyboard: [
       [{ text: '💰 Мой баланс' }, { text: '🎰 Крутить рулетку' }],
+      [{ text: '💳 Купить баллы' }],
       [{ text: '👤 Мой профиль' }, { text: '👥 Пригласить друга' }],
     ],
     resize_keyboard: true,
@@ -103,6 +105,52 @@ function profileInlineKeyboard() {
       [{ text: '✏️ Изменить имя', callback_data: 'profile_change_name' }],
     ],
   };
+}
+
+function formatTenge(value) {
+  const amount = Number(value || 0);
+  return `${amount.toLocaleString('ru-RU')} ₸`;
+}
+
+function topUpPackagesInlineKeyboard(packages = []) {
+  const rows = packages.map((p) => {
+    const id = p.id || p.packageId || p.code || '';
+    const points = p.points ?? p.balls ?? 0;
+    const price = p.price ?? p.amount ?? 0;
+    return [{ text: `${points} баллов — ${formatTenge(price)}`, callback_data: `buy_pkg:${id}` }];
+  }).filter((row) => row[0].callback_data !== 'buy_pkg:');
+  return { inline_keyboard: rows };
+}
+
+async function sendTopUpPackages(bot, chatId, userId) {
+  const token = store.getToken(userId);
+  if (!token) {
+    await bot.sendMessage(chatId, 'Сначала войдите.', { reply_markup: mainKeyboard(userId) });
+    return;
+  }
+  const api = createApiClient(token);
+  try {
+    const packages = await api.getTopUpPackages();
+    if (!packages.length) {
+      await bot.sendMessage(chatId, 'Сейчас пакеты пополнения недоступны. Попробуйте позже.');
+      return;
+    }
+    const lines = [
+      '💳 Выберите пакет пополнения:',
+      '',
+      ...packages.map((p) => {
+        const points = p.points ?? p.balls ?? 0;
+        const price = p.price ?? p.amount ?? 0;
+        return `• ${points} баллов — ${formatTenge(price)}`;
+      }),
+    ];
+    await bot.sendMessage(chatId, lines.join('\n'), {
+      reply_markup: topUpPackagesInlineKeyboard(packages),
+    });
+  } catch (err) {
+    const message = err.response?.data?.message || err.message || 'Не удалось получить пакеты пополнения';
+    await bot.sendMessage(chatId, `❌ ${message}`);
+  }
 }
 
 /** Показать баланс (общая логика для /balance и кнопки) */
@@ -185,7 +233,11 @@ async function doSpin(bot, chatId, userId, latitude, longitude) {
     const balanceRes = await api.getPlayerBalance();
     const balance = balanceRes.balance ?? 0;
     if (balance < MIN_BALANCE_FOR_SPIN) {
-      await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, { reply_markup: mainKeyboard(userId) });
+      await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, {
+        reply_markup: {
+          inline_keyboard: [[{ text: '💳 Купить баллы', callback_data: 'buy_points' }]],
+        },
+      });
       return;
     }
     const spinData = await api.spinRoulette(latitude, longitude);
@@ -287,14 +339,97 @@ export function registerHandlers(bot) {
     });
   });
 
-  // ——— Inline-кнопки в профиле (история, призы, изменить имя) ———
+  // ——— Inline-кнопки (профиль, рефералка, пополнение) ———
   bot.on('callback_query', async (query) => {
     const chatId = query.message?.chat?.id;
     const userId = query.from?.id;
     const data = query.data;
-    if (!chatId || !data?.startsWith('profile_')) return;
+    if (!chatId || !data) return;
 
     await bot.answerCallbackQuery(query.id);
+
+    if (data === 'buy_points') {
+      await sendTopUpPackages(bot, chatId, userId);
+      return;
+    }
+    if (data.startsWith('buy_pkg:')) {
+      const packageId = data.slice('buy_pkg:'.length).trim();
+      const token = store.getToken(userId);
+      if (!token) {
+        await bot.sendMessage(chatId, 'Сначала войдите.');
+        return;
+      }
+      if (!packageId) {
+        await bot.sendMessage(chatId, 'Не удалось определить пакет. Выберите пакет ещё раз.');
+        return;
+      }
+      const api = createApiClient(token);
+      try {
+        const order = await api.createTopUpOrder(packageId);
+        const externalId = order?.externalId || order?.order?.externalId || order?.invoiceId || null;
+        const widgetParams = order?.widgetParams || {};
+        const paymentUrl = widgetParams.paymentUrl || widgetParams.url || order?.paymentUrl || order?.checkoutUrl || null;
+        const lines = [
+          '✅ Заказ на пополнение создан.',
+          externalId ? `ID заказа: ${externalId}` : null,
+          '',
+          paymentUrl
+            ? 'Нажмите кнопку ниже, чтобы перейти к оплате.'
+            : 'Оплата проходит через виджет TipTop. Если ссылка не пришла, откройте оплату в вашем фронтенде.',
+          externalId ? 'После оплаты нажмите «Проверить оплату».' : null,
+        ].filter(Boolean);
+        const inline_keyboard = [];
+        if (paymentUrl) inline_keyboard.push([{ text: '💳 Перейти к оплате', url: paymentUrl }]);
+        if (externalId) inline_keyboard.push([{ text: '🔄 Проверить оплату', callback_data: `buy_chk:${externalId}` }]);
+        await bot.sendMessage(chatId, lines.join('\n'), {
+          reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
+        });
+      } catch (err) {
+        const message = err.response?.data?.message || err.message || 'Не удалось создать заказ';
+        await bot.sendMessage(chatId, `❌ ${message}`);
+      }
+      return;
+    }
+    if (data.startsWith('buy_chk:')) {
+      const externalId = data.slice('buy_chk:'.length).trim();
+      const token = store.getToken(userId);
+      if (!token) {
+        await bot.sendMessage(chatId, 'Сначала войдите.');
+        return;
+      }
+      if (!externalId) {
+        await bot.sendMessage(chatId, 'Некорректный ID заказа. Создайте заказ заново.');
+        return;
+      }
+      const api = createApiClient(token);
+      try {
+        const order = await api.getTopUpOrderStatus(externalId);
+        const status = String(order?.status || 'unknown').toLowerCase();
+        if (status === 'paid') {
+          const balance = order?.balanceAfter ?? order?.newBalance;
+          await bot.sendMessage(
+            chatId,
+            balance != null
+              ? `✅ Оплата подтверждена. Баллы зачислены.\n💰 Новый баланс: ${balance} баллов.`
+              : '✅ Оплата подтверждена. Баллы зачислены.'
+          );
+          return;
+        }
+        const statusText =
+          status === 'pending' ? 'Ожидает оплату' :
+          status === 'created' ? 'Заказ создан' :
+          status === 'failed' ? 'Оплата не прошла' :
+          status;
+        await bot.sendMessage(chatId, `Статус заказа: ${statusText}`, {
+          reply_markup: { inline_keyboard: [[{ text: '🔄 Проверить оплату', callback_data: `buy_chk:${externalId}` }]] },
+        });
+      } catch (err) {
+        const message = err.response?.data?.message || err.message || 'Не удалось проверить статус заказа';
+        await bot.sendMessage(chatId, `❌ ${message}`);
+      }
+      return;
+    }
+    if (!data.startsWith('profile_') && data !== 'referral_enter_code') return;
 
     if (data === 'profile_history') {
       const token = store.getToken(userId);
@@ -491,6 +626,10 @@ export function registerHandlers(bot) {
       await sendBalance(bot, chatId, userId);
       return;
     }
+    if (text === '💳 Купить баллы') {
+      await sendTopUpPackages(bot, chatId, userId);
+      return;
+    }
     // Кнопка «Крутить рулетку» — проверяем гео-сессию и лимит спинов
     if (text === '🎰 Крутить рулетку') {
       const token = store.getToken(userId);
@@ -587,6 +726,7 @@ export function registerHandlers(bot) {
       '📱 /login — войти',
       '💰 /balance — баланс',
       '🎰 /spin — крутить рулетку (после подтверждения клуба)',
+      '💳 Купить баллы — пополнение баллов',
       '👤 /profile — мой профиль',
       '👥 Пригласить друга — реферальная ссылка',
       '🎁 /prizes — мои призы',
@@ -622,6 +762,11 @@ export function registerHandlers(bot) {
   // ——— /balance ———
   bot.onText(/\/(balance|баланс)/i, async (msg) => {
     await sendBalance(bot, msg.chat.id, msg.from?.id);
+  });
+
+  // ——— /buy — купить баллы ———
+  bot.onText(/\/(buy|topup|пополнить)/i, async (msg) => {
+    await sendTopUpPackages(bot, msg.chat.id, msg.from?.id);
   });
 
   // ——— /profile ———

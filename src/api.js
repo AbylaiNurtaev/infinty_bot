@@ -101,6 +101,24 @@ export function createApiClient(token = null) {
       const { data } = await client.get('/players/recent-wins');
       return Array.isArray(data) ? data : [];
     },
+
+    /** GET /payments/packages — пакеты пополнения (публичный) */
+    async getTopUpPackages() {
+      const { data } = await client.get('/payments/packages');
+      return Array.isArray(data) ? data : [];
+    },
+
+    /** POST /payments/create-order — создать заказ пополнения (JWT) */
+    async createTopUpOrder(packageId) {
+      const { data } = await client.post('/payments/create-order', { packageId: String(packageId || '').trim() });
+      return data;
+    },
+
+    /** GET /payments/order/:externalId — статус заказа (JWT) */
+    async getTopUpOrderStatus(externalId) {
+      const { data } = await client.get(`/payments/order/${encodeURIComponent(String(externalId || '').trim())}`);
+      return data;
+    },
   };
 }
 
