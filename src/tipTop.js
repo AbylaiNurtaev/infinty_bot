@@ -20,6 +20,10 @@ function extractPaymentUrl(data) {
     data?.url ||
     data?.model?.payment_url ||
     data?.model?.paymentUrl ||
+    data?.model?.url ||
+    data?.result?.payment_url ||
+    data?.result?.paymentUrl ||
+    data?.result?.url ||
     null
   );
 }
@@ -36,10 +40,21 @@ function extractPaymentId(data) {
   );
 }
 
+function safeForLog(value) {
+  try {
+    const asString = JSON.stringify(value);
+    if (!asString) return value;
+    if (asString.length <= 3000) return value;
+    return `${asString.slice(0, 3000)}...<truncated>`;
+  } catch (_) {
+    return String(value);
+  }
+}
+
 export async function createTipTopPayment({ amount, externalId, packageId, points }) {
   if (!TIP_TOP_API_KEY) throw new Error('Не задан TIP_TOP_API_KEY');
   const notification_url = resolveNotificationUrl();
-  const payload = {
+  const payloadCamel = {
     amount: Number(amount),
     currency: 'KZT',
     externalId: String(externalId),
@@ -47,22 +62,92 @@ export async function createTipTopPayment({ amount, externalId, packageId, point
     description: `TopUp ${packageId}`,
     metadata: { packageId, points },
   };
-
-  const { data } = await axios.post(`${TIP_TOP_API_URL.replace(/\/+$/, '')}/payments`, payload, {
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TIP_TOP_API_KEY}`,
-    },
-    timeout: 20000,
-  });
-
-  const paymentUrl = extractPaymentUrl(data);
-  if (!paymentUrl) throw new Error('TipTop не вернул payment_url');
-  return {
-    paymentUrl,
-    paymentId: extractPaymentId(data),
-    raw: data,
+  const payloadSnake = {
+    amount: Number(amount),
+    currency: 'KZT',
+    external_id: String(externalId),
+    notification_url,
+    description: `TopUp ${packageId}`,
+    metadata: { packageId, points },
   };
+
+  const base = TIP_TOP_API_URL.replace(/\/+$/, '');
+  const attempts = [
+    {
+      name: 'payments-bearer-camel',
+      url: `${base}/payments`,
+      payload: payloadCamel,
+      headers: { Authorization: `Bearer ${TIP_TOP_API_KEY}` },
+    },
+    {
+      name: 'payments-bearer-snake',
+      url: `${base}/payments`,
+      payload: payloadSnake,
+      headers: { Authorization: `Bearer ${TIP_TOP_API_KEY}` },
+    },
+    {
+      name: 'payments-x-api-key',
+      url: `${base}/payments`,
+      payload: payloadSnake,
+      headers: { 'X-API-KEY': TIP_TOP_API_KEY },
+    },
+    {
+      name: 'payment-links',
+      url: `${base}/payment-links`,
+      payload: payloadSnake,
+      headers: { Authorization: `Bearer ${TIP_TOP_API_KEY}` },
+    },
+  ];
+
+  const debug = [];
+  for (const attempt of attempts) {
+    try {
+      const { data } = await axios.post(attempt.url, attempt.payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...attempt.headers,
+        },
+        timeout: 20000,
+      });
+      const paymentUrl = extractPaymentUrl(data);
+      if (paymentUrl) {
+        console.log('[tiptop] create payment success', {
+          attempt: attempt.name,
+          url: attempt.url,
+          externalId: String(externalId),
+          amount: Number(amount),
+          responseData: safeForLog(data),
+        });
+        return {
+          paymentUrl,
+          paymentId: extractPaymentId(data),
+          raw: data,
+        };
+      }
+      debug.push({
+        attempt: attempt.name,
+        ok: true,
+        keys: Object.keys(data || {}),
+        responseData: safeForLog(data),
+      });
+    } catch (err) {
+      debug.push({
+        attempt: attempt.name,
+        ok: false,
+        status: err.response?.status,
+        message: err.response?.data?.message || err.message,
+        responseData: safeForLog(err.response?.data || null),
+      });
+    }
+  }
+
+  console.log('[tiptop] create payment failed', {
+    externalId: String(externalId),
+    amount: Number(amount),
+    notification_url,
+    debug,
+  });
+  throw new Error('TipTop не вернул ссылку оплаты. Проверьте формат API/ключи (детали в логах сервера).');
 }
 
 export function parseTipTopWebhook(body) {
