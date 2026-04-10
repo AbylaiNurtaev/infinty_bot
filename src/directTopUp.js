@@ -21,7 +21,7 @@ function getCollection() {
   if (!mongoClient) mongoClient = new MongoClient(mongoUri);
   const dbName = process.env.MONGO_DB_NAME || 'test';
   const collectionName = process.env.MONGO_USERS_COLLECTION || 'users';
-  return mongoClient.db(dbName).collection(collectionName);
+  return { collection: mongoClient.db(dbName).collection(collectionName), dbName, collectionName };
 }
 
 async function ensureConnected() {
@@ -40,15 +40,27 @@ export async function applyLocalTopUpByPhone(rawPhone, packageId) {
   if (!phone) throw new Error('Не удалось определить номер пользователя');
 
   await ensureConnected();
-  const users = getCollection();
+  const { collection: users, dbName, collectionName } = getCollection();
+  const raw = String(rawPhone || '').trim();
+  const plain8 = `8${phone.slice(1)}`;
+  const variants = Array.from(new Set([
+    phone,
+    `+${phone}`,
+    plain8,
+    `+${plain8}`,
+    raw,
+  ].filter(Boolean)));
   const query = {
-    $or: [
-      { phone },
-      { phone: `+${phone}` },
-      { phone: `8${phone.slice(1)}` },
-      { phone: `+8${phone.slice(1)}` },
-    ],
+    $or: variants.map((v) => ({ phone: v })),
   };
+
+  console.log('[topup] search user', {
+    dbName,
+    collectionName,
+    rawPhone: raw,
+    normalizedPhone: phone,
+    variants,
+  });
 
   const res = await users.findOneAndUpdate(
     query,
@@ -56,7 +68,14 @@ export async function applyLocalTopUpByPhone(rawPhone, packageId) {
     { returnDocument: 'after' }
   );
 
-  if (!res.value) throw new Error('Пользователь не найден в MongoDB (коллекция users)');
+  if (!res.value) {
+    const sample = await users.find({}, { projection: { _id: 0, phone: 1, balance: 1 } }).limit(5).toArray();
+    console.log('[topup] user not found', { dbName, collectionName, variants, sample });
+    throw new Error(
+      `Пользователь не найден. Ищем в ${dbName}.${collectionName} по полю phone. Варианты: ${variants.join(', ')}`
+    );
+  }
+  console.log('[topup] success', { userPhone: res.value.phone, pointsAdded: selected.points, newBalance: res.value.balance });
   return { pointsAdded: selected.points, newBalance: Number(res.value.balance || 0), packageId: selected.id };
 }
 
