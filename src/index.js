@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import { registerHandlers } from './handlers.js';
+import { startWebhookServer } from './webhookServer.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
@@ -11,6 +12,7 @@ if (!token) {
 const bot = new TelegramBot(token, { polling: true });
 
 registerHandlers(bot);
+startWebhookServer(bot);
 
 bot.on('polling_error', (err) => {
   console.error('Polling error:', err.message);

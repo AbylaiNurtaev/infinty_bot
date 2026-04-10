@@ -29,8 +29,29 @@ async function ensureConnected() {
   await mongoClient.connect();
 }
 
+async function findUserAcrossDatabases(variants) {
+  const admin = mongoClient.db().admin();
+  const dbs = await admin.listDatabases();
+  const names = (dbs.databases || []).map((d) => d.name).filter(Boolean);
+  for (const dbName of names) {
+    const users = mongoClient.db(dbName).collection(process.env.MONGO_USERS_COLLECTION || 'users');
+    const found = await users.findOne({ $or: variants.map((v) => ({ phone: v })) }, { projection: { _id: 1, phone: 1, balance: 1 } });
+    if (found) return { dbName, collectionName: process.env.MONGO_USERS_COLLECTION || 'users', user: found };
+  }
+  return null;
+}
+
 export function getLocalTopUpPackages() {
   return TOP_UP_PACKAGES;
+}
+
+export function getTopUpPackageById(packageId) {
+  return TOP_UP_PACKAGES.find((p) => p.id === packageId) || null;
+}
+
+export function getTopUpPackageByAmount(amount) {
+  const value = Number(amount);
+  return TOP_UP_PACKAGES.find((p) => Number(p.price) === value) || null;
 }
 
 export async function applyLocalTopUpByPhone(rawPhone, packageId) {
@@ -69,11 +90,30 @@ export async function applyLocalTopUpByPhone(rawPhone, packageId) {
   );
 
   if (!res.value) {
+    const foundElsewhere = await findUserAcrossDatabases(variants);
+    if (foundElsewhere) {
+      const target = mongoClient.db(foundElsewhere.dbName).collection(foundElsewhere.collectionName);
+      const updated = await target.findOneAndUpdate(
+        { _id: foundElsewhere.user._id },
+        { $inc: { balance: selected.points } },
+        { returnDocument: 'after' }
+      );
+      console.log('[topup] success via fallback db', {
+        foundInDb: foundElsewhere.dbName,
+        userPhone: updated.value?.phone,
+        pointsAdded: selected.points,
+        newBalance: updated.value?.balance,
+      });
+      return {
+        pointsAdded: selected.points,
+        newBalance: Number(updated.value?.balance || 0),
+        packageId: selected.id,
+      };
+    }
+
     const sample = await users.find({}, { projection: { _id: 0, phone: 1, balance: 1 } }).limit(5).toArray();
     console.log('[topup] user not found', { dbName, collectionName, variants, sample });
-    throw new Error(
-      `Пользователь не найден. Ищем в ${dbName}.${collectionName} по полю phone. Варианты: ${variants.join(', ')}`
-    );
+    throw new Error(`Пользователь не найден. Ищем в ${dbName}.${collectionName} по полю phone. Варианты: ${variants.join(', ')}`);
   }
   console.log('[topup] success', { userPhone: res.value.phone, pointsAdded: selected.points, newBalance: res.value.balance });
   return { pointsAdded: selected.points, newBalance: Number(res.value.balance || 0), packageId: selected.id };

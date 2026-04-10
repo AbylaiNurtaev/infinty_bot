@@ -1,6 +1,7 @@
 import { createApiClient } from './api.js';
 import { store } from './store.js';
-import { applyLocalTopUpByPhone, getLocalTopUpPackages } from './directTopUp.js';
+import { getLocalTopUpPackages, getTopUpPackageById } from './directTopUp.js';
+import { createTipTopPayment } from './tipTop.js';
 
 const MIN_BALANCE_FOR_SPIN = 20;
 const GEO_SESSION_MS = 60 * 60 * 1000; // 60 минут
@@ -367,14 +368,36 @@ export function registerHandlers(bot) {
           await bot.sendMessage(chatId, 'Не найден телефон аккаунта. Выполните вход заново через /login.');
           return;
         }
-        const result = await applyLocalTopUpByPhone(phone, packageId);
+        const pkg = getTopUpPackageById(packageId);
+        if (!pkg) {
+          await bot.sendMessage(chatId, 'Пакет не найден. Выберите пакет ещё раз.');
+          return;
+        }
+        const payment = await createTipTopPayment({
+          amount: pkg.price,
+          externalId: phone,
+          packageId: pkg.id,
+          points: pkg.points,
+        });
+        if (payment.paymentId) {
+          store.setPendingPayment(payment.paymentId, {
+            userId: String(userId),
+            chatId: String(chatId),
+            phone,
+            packageId: pkg.id,
+          });
+        }
         await bot.sendMessage(
           chatId,
-          `✅ Баллы зачислены: +${result.pointsAdded}\n💰 Новый баланс: ${result.newBalance} баллов.`,
-          { reply_markup: mainKeyboard(userId) }
+          `✅ Заказ создан.\nПакет: +${pkg.points} баллов за ${formatTenge(pkg.price)}\n\nПосле успешной оплаты баллы начислятся автоматически.`,
+          {
+            reply_markup: {
+              inline_keyboard: [[{ text: '💳 Перейти к оплате', url: payment.paymentUrl }]],
+            },
+          }
         );
       } catch (err) {
-        const message = err.message || 'Не удалось зачислить баллы';
+        const message = err.response?.data?.message || err.message || 'Не удалось создать платёж';
         await bot.sendMessage(chatId, `❌ ${message}`);
       }
       return;

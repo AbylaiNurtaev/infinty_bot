@@ -19,6 +19,15 @@ let awaitReferralCode = {};
 let geoSessions = {};
 /** userId -> number[] — время последних спинов для лимита 5 за 10 мин */
 let spinTimes = {};
+/** paymentId -> { userId, chatId, phone, packageId } */
+let pendingPayments = {};
+
+function normalizePhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  if (digits.length === 11 && (digits.startsWith('7') || digits.startsWith('8'))) return `7${digits.slice(-10)}`;
+  return `7${digits.slice(-10)}`;
+}
 
 function load() {
   try {
@@ -149,5 +158,29 @@ export const store = {
   },
   clearAwaitReferralCode(chatId) {
     delete awaitReferralCode[chatId];
+  },
+
+  findTelegramUserIdByPhone(rawPhone) {
+    const needle = normalizePhone(rawPhone);
+    if (!needle) return null;
+    const entries = Object.entries(tokens);
+    for (const [userId, data] of entries) {
+      const p = normalizePhone(data?.phone);
+      if (p && p === needle) return userId;
+    }
+    return null;
+  },
+
+  setPendingPayment(paymentId, payload) {
+    if (!paymentId) return;
+    pendingPayments[String(paymentId)] = payload;
+  },
+
+  getPendingPayment(paymentId) {
+    return pendingPayments[String(paymentId)] ?? null;
+  },
+
+  clearPendingPayment(paymentId) {
+    delete pendingPayments[String(paymentId)];
   },
 };
