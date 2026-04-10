@@ -111,13 +111,13 @@ export async function createTipTopPayment({ amount, externalId, packageId, point
       });
       const paymentUrl = extractPaymentUrl(data);
       if (paymentUrl) {
-        console.log('[tiptop] create payment success', {
+        console.log('[tiptop] create payment success', JSON.stringify({
           attempt: attempt.name,
           url: attempt.url,
           externalId: String(externalId),
           amount: Number(amount),
           responseData: safeForLog(data),
-        });
+        }, null, 2));
         return {
           paymentUrl,
           paymentId: extractPaymentId(data),
@@ -141,12 +141,12 @@ export async function createTipTopPayment({ amount, externalId, packageId, point
     }
   }
 
-  console.log('[tiptop] create payment failed', {
+  console.log('[tiptop] create payment failed', JSON.stringify({
     externalId: String(externalId),
     amount: Number(amount),
     notification_url,
     debug,
-  });
+  }, null, 2));
   throw new Error('TipTop не вернул ссылку оплаты. Проверьте формат API/ключи (детали в логах сервера).');
 }
 
