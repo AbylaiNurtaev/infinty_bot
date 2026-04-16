@@ -82,7 +82,7 @@ function mainKeyboard(userId) {
     return {
       keyboard: [
         [{ text: '💰 Мой баланс' }, { text: '📍 Подтвердить клуб', request_location: true }],
-        [{ text: '💳 Купить баллы' }],
+        // [{ text: '💳 Купить баллы' }],
         [{ text: '👤 Мой профиль' }, { text: '👥 Пригласить друга' }],
       ],
       resize_keyboard: true,
@@ -91,7 +91,7 @@ function mainKeyboard(userId) {
   return {
     keyboard: [
       [{ text: '💰 Мой баланс' }, { text: '🎰 Крутить рулетку' }],
-      [{ text: '💳 Купить баллы' }],
+      // [{ text: '💳 Купить баллы' }],
       [{ text: '👤 Мой профиль' }, { text: '👥 Пригласить друга' }],
     ],
     resize_keyboard: true,
@@ -233,11 +233,13 @@ async function doSpin(bot, chatId, userId, latitude, longitude) {
     const balanceRes = await api.getPlayerBalance();
     const balance = balanceRes.balance ?? 0;
     if (balance < MIN_BALANCE_FOR_SPIN) {
-      await bot.sendMessage(chatId, `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`, {
-        reply_markup: {
-          inline_keyboard: [[{ text: '💳 Купить баллы', callback_data: 'buy_points' }]],
-        },
-      });
+      await bot.sendMessage(
+        chatId,
+        `❌ Недостаточно баллов. Нужно ${MIN_BALANCE_FOR_SPIN}, у вас ${balance}.`
+        // reply_markup: {
+        //   inline_keyboard: [[{ text: '💳 Купить баллы', callback_data: 'buy_points' }]],
+        // },
+      );
       return;
     }
     const spinData = await api.spinRoulette(latitude, longitude);
@@ -599,10 +601,10 @@ export function registerHandlers(bot) {
       await sendBalance(bot, chatId, userId);
       return;
     }
-    if (text === '💳 Купить баллы') {
-      await sendTopUpPackages(bot, chatId, userId);
-      return;
-    }
+    // if (text === '💳 Купить баллы') {
+    //   await sendTopUpPackages(bot, chatId, userId);
+    //   return;
+    // }
     // Кнопка «Крутить рулетку» — проверяем гео-сессию и лимит спинов
     if (text === '🎰 Крутить рулетку') {
       const token = store.getToken(userId);
@@ -699,7 +701,7 @@ export function registerHandlers(bot) {
       '📱 /login — войти',
       '💰 /balance — баланс',
       '🎰 /spin — крутить рулетку (после подтверждения клуба)',
-      '💳 Купить баллы — пополнение баллов',
+      // '💳 Купить баллы — пополнение баллов',
       '👤 /profile — мой профиль',
       '👥 Пригласить друга — реферальная ссылка',
       '🎁 /prizes — мои призы',
